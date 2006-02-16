@@ -13,6 +13,15 @@ extern "C" {
 }
 
 
+enum EMenuValue
+{
+    eMVNone = -1,
+    eMVViewerClose,
+    eMVVdrShutdown,
+    eMVSettings
+};
+		
+
 class cMenuItem 
 {
 protected:
@@ -24,6 +33,7 @@ protected:
     int  m_ItemWidth;
     int  m_ItemHeight;
     bool m_Selectable;
+    EMenuValue m_RetValue;
 
 public:
     cMenuItem(const char *pName);
@@ -34,6 +44,7 @@ public:
     int  GetItemWidth();
     int  GetItemHeight();
     bool IsSelectable() { return m_Selectable; };
+    EMenuValue GetRetValue() { return m_RetValue; };
     virtual void Draw(int ItemLeft = -1, int ItemTop = -1, int ItemWidth = -1);
 };
 	    
@@ -59,6 +70,18 @@ public:
 };
 
 
+class cMenuSelItem : public cMenuItem {
+protected:
+    EMenuValue m_MenuValue;
+
+public:
+    cMenuSelItem(const char *Name, EMenuValue MenuValue);
+    virtual ~cMenuSelItem();
+    virtual void Draw(int ItemLeft = -1, int ItemTop = -1, int ItemWidth = -1);
+    virtual bool ProcessKey(int Key);
+};
+
+
 class cMenuSeparatorItem : public cMenuItem {
 protected:
 
@@ -80,6 +103,7 @@ private:
     TItemList::iterator m_VisibleItemBegin;
     TItemList::iterator m_VisibleItemEnd;
     TItemList::iterator m_SelectedItem;
+    EMenuValue m_RetValue;
     static int GetKey(int rc_fd);
 
 public:
@@ -89,7 +113,7 @@ public:
     void Add(cMenuItem *pMenuItem);
     virtual bool ProcessKey(int Key);
     void Draw();
-    void Show(int rc_fd);
+    EMenuValue Show(int rc_fd);
 
     static void MsgBox(int rc_fd, char* header, char* question);
     static bool HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev);

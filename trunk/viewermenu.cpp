@@ -26,6 +26,8 @@ extern "C" {
 #define MENU_MIN_WIDTH 200 
 #define ITEM_HEIGHT 32
 
+
+
 //************************************************************************************************
 // 	cMenuItem::cMenuItem()
 //************************************************************************************************
@@ -37,6 +39,7 @@ cMenuItem::cMenuItem(const char *pText)
     m_ItemWidth  = ITEM_TEXT_LEFT + GetStringLen(m_pText) + ITEM_TEXT_RIGHT;
     m_ItemHeight = ITEM_HEIGHT;
     m_Selectable = true;
+    m_RetValue   = eMVNone;
 }
 
 //************************************************************************************************
@@ -174,6 +177,46 @@ bool cMenuIntItem::ProcessKey(int Key)
 
 
 //************************************************************************************************
+// 	cMenuSelItem::cMenuSelItem()
+//************************************************************************************************
+cMenuSelItem::cMenuSelItem(const char *Name, EMenuValue MenuValue): cMenuItem(Name)
+{
+    m_MenuValue = MenuValue;
+}
+
+
+//************************************************************************************************
+// 	cMenuSelItem::~cMenuSelItem()
+//************************************************************************************************
+cMenuSelItem::~cMenuSelItem()
+{
+}
+
+
+//************************************************************************************************
+// 	cMenuSelItem::Draw()
+//************************************************************************************************
+void cMenuSelItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
+{
+    cMenuItem::Draw(ItemLeft , ItemTop, ItemWidth);
+}
+
+//************************************************************************************************
+// 	cMenuSelItem::ProcessKey()
+//************************************************************************************************
+bool cMenuSelItem::ProcessKey(int Key)
+{
+    if (Key == KEY_OK)
+    {
+	m_RetValue = m_MenuValue;
+	return true;
+    }
+    
+    return false; 
+}
+
+
+//************************************************************************************************
 // 	cMenuSeparatorItem::cMenuSeparatorItem()
 //************************************************************************************************
 cMenuSeparatorItem::cMenuSeparatorItem(): cMenuItem("")
@@ -221,6 +264,8 @@ cMenu::cMenu(const char *pName)
     m_ItemWidth = ITEM_TEXT_LEFT + GetStringLen(m_pName) + ITEM_TEXT_RIGHT;
     if (m_ItemWidth < MENU_MIN_WIDTH)
 	m_ItemWidth = MENU_MIN_WIDTH;
+	
+    m_RetValue = eMVNone;
 }
 
 //************************************************************************************************
@@ -323,7 +368,10 @@ bool cMenu::ProcessKey(int Key)
 { 
     bool handled = (*m_SelectedItem)->ProcessKey(Key);
     if (handled)
+    {
+	m_RetValue = (*m_SelectedItem)->GetRetValue();
 	return true;
+    }
 	
     switch (Key)
     {
@@ -361,7 +409,6 @@ bool cMenu::ProcessKey(int Key)
 	}
 	return true;
 
-    case KEY_OK:
     case KEY_HOME:
 	return false;
 	
@@ -373,7 +420,7 @@ bool cMenu::ProcessKey(int Key)
 //************************************************************************************************
 // 	cMenu::Show()
 //************************************************************************************************
-void cMenu::Show(int rc_fd)
+EMenuValue cMenu::Show(int rc_fd)
 {
     IMPORT_FRAMEBUFFER_VARS;
     
@@ -386,12 +433,15 @@ void cMenu::Show(int rc_fd)
     {
 	rccode = cMenu::GetKey(rc_fd);
 	if(!ProcessKey(rccode))
-	{
 	    break;
-	}
+	    
+	if (m_RetValue != eMVNone)
+	    break;
     }
     
     SendFramebufferUpdateRequest(0, 0, p_xsize, p_ysize, False);
+    
+    return m_RetValue;
 }
 
 
@@ -435,18 +485,7 @@ void cMenu::MsgBox(int rc_fd, char* header, char* question)
 //************************************************************************************************
 bool cMenu::HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev)
 {
-    if (iev.code == KEY_HOME)
-    {
-	if (iev.value == 1)
-	{
-	    ev->evtype = FBVNC_EVENT_NULL;  // ignore key pressed event
-	    return true;
-	}
-	    
-	ev->evtype = FBVNC_EVENT_QUIT;
-	return false;
-    }
-/*    else if (iev.code == KEY_RED)
+    if (iev.code == KEY_POWER)
     {
 	if (iev.value == 1)
 	{
@@ -455,21 +494,33 @@ bool cMenu::HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev)
 	}
 
 	cMenu Menu("VDR-Viewer Menü");
-	int Value;
-	Menu.Add(new cMenuIntItem("VDR-Viewer schließen", &Value, 0, 10));
-	Menu.Add(new cMenuIntItem("DBOX ausschalten", &Value, 0, 10));
-	Menu.Add(new cMenuIntItem("VDR ausschalten", &Value, 0, 10));
+	Menu.Add(new cMenuSelItem("VDR-Viewer schließen", eMVViewerClose));
+	Menu.Add(new cMenuSelItem("VDR ausschalten", eMVVdrShutdown));
 	Menu.Add(new cMenuSeparatorItem());
-	Menu.Add(new cMenuIntItem("Einstellungen", &Value, 0, 10));
-	Menu.Show(rc_fd);
-
-	//MsgBox(rc_fd, "ein Test", "ja ein test");
-	
-	fprintf(stderr, "RenderBox\n");
-	
-	ev->evtype = FBVNC_EVENT_NULL;
-	return true;
-    }*/
+	Menu.Add(new cMenuSelItem("Einstellungen", eMVSettings));
+	EMenuValue RetVal = Menu.Show(rc_fd);
+    
+	dprintf("[vncv] MenuRet: %d\n", RetVal);
+	switch(RetVal)
+	{
+	case eMVViewerClose:
+	    ev->evtype = FBVNC_EVENT_QUIT;
+	    return false;
+	    break;
+		
+	case eMVVdrShutdown:
+	    // Send Key to VDR
+	    break;
+	    
+	case eMVSettings:
+	    break;
+	    
+	default:
+	    ev->evtype = FBVNC_EVENT_NULL;
+	    return True;
+	    break;
+	}
+    }
 
     ev->evtype = FBVNC_EVENT_NULL;
     return False;
