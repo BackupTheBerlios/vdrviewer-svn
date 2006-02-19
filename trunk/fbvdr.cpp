@@ -79,6 +79,7 @@ int blev;
 char terminate;
 int gScale,sx,sy,ex,ey;
 int usepointer = 0;
+bool bResync = False;
 void fbvnc_close(void);
 Pixel ico_mouse[] = {
 ICO_WHITE,ICO_WHITE,ICO_WHITE,ICO_WHITE,
@@ -608,6 +609,8 @@ void *mp_ReceiveStream(void *sArgument)
   dprintf("ReceiverThread beendet\n");
 }
 
+
+
 void *mp_playStream(void *sArgument)
 {
   int rd, rSize;
@@ -720,6 +723,13 @@ void *mp_playStream(void *sArgument)
       ctx->refillBuffer = true;
       continue;
     }
+    
+    if (bResync)
+    {
+	mp_softReset(ctx);
+	bResync = False;
+    }
+	
 
     //checkAspectRatio(ctx->vdec, false);
     
@@ -763,6 +773,10 @@ void *mp_playStream(void *sArgument)
 }
 
 
+void Resync()
+{
+    bResync = True;
+}
 
 
 extern "C"

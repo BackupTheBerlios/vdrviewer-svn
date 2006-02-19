@@ -4,6 +4,7 @@
  
 
 #include <unistd.h>
+#include <configfile.h>
 
 extern "C" {
 #include "vdrviewer.h"
@@ -15,6 +16,8 @@ extern "C" {
 
 #define RetEvent(e) do { ev->evtype = (e); return (e); } while(0)
 
+
+#define VDRVIEWER_SETTINGS_FILE CONFIGDIR "/vdr.conf"
 
 #define ITEM_HOTKEY_LEFT 10
 #define ITEM_TEXT_LEFT 30
@@ -477,9 +480,84 @@ void cMenu::MsgBox(int rc_fd, char* header, char* question)
     }
 }
 
+//************************************************************************************************
+// 	cMenu::PowerButtonMenu()
+//************************************************************************************************
+bool cMenu::PowerButtonMenu(int rc_fd, fbvnc_event_t *ev)
+{
+    while (1)
+    {
+	cMenu Menu("VDR-Viewer Menü");
+	Menu.Add(new cMenuSelItem("VDR-Viewer schließen", eMVViewerClose));
+	Menu.Add(new cMenuSelItem("VDR ausschalten", eMVVdrShutdown));
+	Menu.Add(new cMenuSeparatorItem());
+	Menu.Add(new cMenuSelItem("Stream synchronisieren", eMVResync));
+	//Menu.Add(new cMenuSeparatorItem());
+	//Menu.Add(new cMenuSelItem("Einstellungen", eMVSettings));
+	EMenuValue RetVal = Menu.Show(rc_fd);
+    
+	dprintf("[vncv] MenuRet: %d\n", RetVal);
+	switch(RetVal)
+	{
+	case eMVViewerClose: // Close VDR-Viewer
+    	    ev->evtype = FBVNC_EVENT_QUIT;
+    	    return false;
+    	    break;
+		
+	case eMVVdrShutdown: // Send Key to VDR
+	    ev->evtype = FBVNC_EVENT_NULL;
+	    return false;
+	    break;
+	    
+	case eMVResync: // Resync Stream
+	    Resync();
+	    ev->evtype = FBVNC_EVENT_NULL;
+	    return true;
+    	    break;
+	    
+	case eMVSettings: // Show Settings Menu
+	    SettingsMenu(rc_fd);
+    	    break;
+	    
+	default:
+    	    ev->evtype = FBVNC_EVENT_NULL;
+    	    return true;
+    	    break;
+	}
+    }
+    
+    ev->evtype = FBVNC_EVENT_NULL;
+    return false;
+}
 
 
+//************************************************************************************************
+// 	cMenu::SettingsMenu
+//************************************************************************************************
+void cMenu::SettingsMenu(int rc_fd)
+{
+    CConfigFile configfile('\t');
+    configfile.loadConfig(VDRVIEWER_SETTINGS_FILE);
+    std::string serverip = configfile.getString("server", "10.10.10.10");
+    int    osdport 	 = configfile.getInt32("osdport", 20001);
+    int    streamingport = configfile.getInt32("streamingport", 20002);
+    
 
+    cMenu Menu("VDR-Viewer Einstellungen");
+    //Menu.Add(new cMenuStringItem("Server-Adresse", serverip));
+    Menu.Add(new cMenuIntItem("OSD-Port", &osdport, 100, 99999));
+    Menu.Add(new cMenuIntItem("Streaming-Port", &streamingport, 100, 99999));
+    Menu.Add(new cMenuSeparatorItem());
+    EMenuValue RetVal = Menu.Show(rc_fd);
+    
+    
+    configfile.getString("server", serverip);
+    configfile.setInt32("osdport", osdport);
+    configfile.setInt32("streamingport", streamingport);
+    configfile.saveConfig(VDRVIEWER_SETTINGS_FILE);
+}
+
+int cMenu::start = 0;
 //************************************************************************************************
 // 	HandleMenu()
 //************************************************************************************************
@@ -493,35 +571,9 @@ bool cMenu::HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev)
 	    return true;
 	}
 
-	cMenu Menu("VDR-Viewer Menü");
-	Menu.Add(new cMenuSelItem("VDR-Viewer schließen", eMVViewerClose));
-	Menu.Add(new cMenuSelItem("VDR ausschalten", eMVVdrShutdown));
-	Menu.Add(new cMenuSeparatorItem());
-	Menu.Add(new cMenuSelItem("Einstellungen", eMVSettings));
-	EMenuValue RetVal = Menu.Show(rc_fd);
-    
-	dprintf("[vncv] MenuRet: %d\n", RetVal);
-	switch(RetVal)
-	{
-	case eMVViewerClose:
-	    ev->evtype = FBVNC_EVENT_QUIT;
-	    return false;
-	    break;
-		
-	case eMVVdrShutdown:
-	    // Send Key to VDR
-	    break;
-	    
-	case eMVSettings:
-	    break;
-	    
-	default:
-	    ev->evtype = FBVNC_EVENT_NULL;
-	    return True;
-	    break;
-	}
+	return PowerButtonMenu(rc_fd, ev);	
     }
 
     ev->evtype = FBVNC_EVENT_NULL;
-    return False;
+    return false;
 }

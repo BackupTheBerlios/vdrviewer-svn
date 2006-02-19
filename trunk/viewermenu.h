@@ -18,6 +18,7 @@ enum EMenuValue
     eMVNone = -1,
     eMVViewerClose,
     eMVVdrShutdown,
+    eMVResync,
     eMVSettings
 };
 		
@@ -105,6 +106,8 @@ private:
     TItemList::iterator m_SelectedItem;
     EMenuValue m_RetValue;
     static int GetKey(int rc_fd);
+    
+    static int start;
 
 public:
     cMenu(const char *pName);
@@ -114,6 +117,9 @@ public:
     virtual bool ProcessKey(int Key);
     void Draw();
     EMenuValue Show(int rc_fd);
+    
+    static bool PowerButtonMenu(int rc_fd, fbvnc_event_t *ev);
+    static void SettingsMenu(int rc_fd);
 
     static void MsgBox(int rc_fd, char* header, char* question);
     static bool HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev);
