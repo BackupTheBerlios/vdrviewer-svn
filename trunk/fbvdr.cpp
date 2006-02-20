@@ -1515,7 +1515,14 @@ dprintf("reading ms_fd\n");
 			    {
 				dprintf("dprintf: Sende Code: %d Value: %d\n", iev.code, iev.value);
 				printf("printf: Sende Code: %d Value: %d\n", iev.code, iev.value);
-				SendKeyEvent(iev.code, iev.value);
+				if ((iev.value == 0) || (iev.value == 2))
+				{
+				    SendKeyEvent(iev.code, 1);
+				}
+				else
+				{
+				    SendKeyEvent(iev.code, 0);
+				}
 				RetEvent(FBVNC_EVENT_NULL);
 			    }
 			    else
