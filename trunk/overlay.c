@@ -1309,11 +1309,11 @@ selectServer(char* szServerNr, int rc_fd)
     char szServers[MAXSERVERS][256];
     char szServerNrs[MAXSERVERS][10];
     char line[256], *p;
-    FILE* fp = fopen( CONFIGDIR "/vnc.conf", "r" );
+    FILE* fp = fopen( CONFIGDIR "/vdr.conf", "r" );
     if ( !fp )
     {
-	MessageBox("could not open " CONFIGDIR "/vnc.conf !!!", rc_fd);
-	printf("vncviewer: could not open " CONFIGDIR "/vnc.conf !!!\n");
+	MessageBox("could not open " CONFIGDIR "/vdr.conf !!!", rc_fd);
+	printf("vncviewer: could not open " CONFIGDIR "/vdr.conf !!!\n");
     }
     else    
     {    
