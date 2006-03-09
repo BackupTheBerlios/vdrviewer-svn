@@ -21,7 +21,7 @@ enum EMenuValue
     eMVResync,
     eMVSettings
 };
-		
+
 
 class cMenuItem 
 {
@@ -105,9 +105,15 @@ private:
     TItemList::iterator m_VisibleItemEnd;
     TItemList::iterator m_SelectedItem;
     EMenuValue m_RetValue;
-    static int GetKey(int rc_fd);
-    
+    static int GetRCCode(int rc_fd);
+
     static int start;
+    
+    static unsigned short rccode;
+#if HAVE_DVB_API_VERSION == 3
+    static struct input_event ev;
+#endif
+
 
 public:
     cMenu(const char *pName);

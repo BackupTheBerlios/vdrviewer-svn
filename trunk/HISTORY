@@ -4,10 +4,13 @@ DBOX2-Plugin 'VDR-Viewer' Revision History
 
 
 2006-02-19: vdrviewer-0.1.0
-- first version of vdrviewer
+- firsd version of vdrviewer
 
 2006-02-20: vdrviewer-0.1.1
-- fixet bug with sending remote keys
+- fixed bug with sending remote keys
 
 2006-02-23: vdrviewer-0.1.2
-- fixet bug with vnc.conf/vdr.conf
+- fixed bug with vnc.conf/vdr.conf
+
+2006-03-09:
+- fixed repeating of keys bug

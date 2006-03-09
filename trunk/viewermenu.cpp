@@ -30,6 +30,104 @@ extern "C" {
 #define ITEM_HEIGHT 32
 
 
+#define RC_0                    '0'
+#define RC_1                    '1'
+#define RC_2                    '2'
+#define RC_3                    '3'
+#define RC_4                    '4'
+#define RC_5                    '5'
+#define RC_6                    '6'
+#define RC_7                    '7'
+#define RC_8                    '8'
+#define RC_9                    '9'
+
+#define RC_RIGHT        0x0191
+#define RC_LEFT         0x0192
+#define RC_UP                   0x0193
+#define RC_DOWN         0x0194
+#define RC_PLUS         0x0195
+#define RC_MINUS        0x0196
+
+#define RC_OK                           0x0D
+#define RC_STANDBY      0x1C
+#define RC_ESC                  RC_HOME
+
+#define RC_HOME                 0x01B1
+#define RC_MUTE                 0x01B2
+#define RC_HELP                 0x01B3
+#define RC_DBOX                 0x01B4
+
+#define RC_GREEN        0x01A1
+#define RC_YELLOW       0x01A2
+#define RC_RED          0x01A3
+#define RC_BLUE         0x01A4
+
+#define RC_PAUSE        RC_HELP
+#define RC_ALTGR        0x12
+#define RC_BS                   0x08
+#define RC_POS1         RC_HOME
+#define RC_END          0x13
+#define RC_INS          0x10
+#define RC_ENTF         0x11
+#define RC_STRG         0x00
+#define RC_LSHIFT       0x0E
+#define RC_RSHIFT       0x0E
+#define RC_ALT          0x0F
+#define RC_NUM          RC_DBOX
+#define RC_ROLLEN       0x00
+#define RC_F5                   0x01C5
+#define RC_F6                   0x01C6
+#define RC_F7                   0x01C7
+#define RC_F8                   0x01C8
+#define RC_F9                   0x01C9
+#define RC_F10          0x01CA
+#define RC_RET          0x0D
+#define RC_RET1         0x01CC
+#define RC_CAPSLOCK     0x01CD
+#define RC_ON                   0x01CE
+
+#define RC_F1           RC_RED
+#define RC_F2           RC_GREEN
+#define RC_F3           RC_YELLOW
+#define RC_F4           RC_BLUE
+#define RC_PAGEUP       RC_PLUS
+#define RC_PAGEDOWN     RC_MINUS
+
+
+int rctable[] =
+{
+    0x00, RC_ESC, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'ß', '´', RC_BS, 0x09,
+    'q',  'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 'ü', '+', RC_RET, RC_STRG, 'a', 's',
+    'd',  'f', 'g', 'h', 'j', 'k', 'l', 'ö', 'ä', '^', RC_LSHIFT, '#', 'y', 'x', 'c', 'v',
+    'b',  'n', 'm', ',', '.', '-', RC_RSHIFT, 0x00, RC_ALT, 0x20, RC_CAPSLOCK,RC_F1,RC_F2,RC_F3,RC_F4,RC_F5,
+    RC_F6,RC_F7,RC_F8,RC_F9,RC_F10,RC_NUM,RC_ROLLEN,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, RC_STANDBY, 0x00, 0x00, 0x00, 0x00, '<', RC_OK, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, RC_ALTGR, 0x00, RC_POS1, RC_UP, RC_PAGEUP, RC_LEFT, RC_RIGHT, RC_END, RC_DOWN,RC_PAGEDOWN,RC_INS,RC_ENTF,
+    0x00, RC_MUTE, RC_MINUS, RC_PLUS, RC_STANDBY, 0x00, 0x00, RC_PAUSE, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+int rcshifttable[] =
+{
+    0x00, RC_ESC, '!', '"', '§', '$', '%', '&', '/', '(', ')', '=', '?', '`', 0x08, 0x09,
+    'Q',  'W', 'E', 'R', 'T', 'Z', 'U', 'I', 'O', 'P', 'Ü', '*', RC_RET1, RC_STRG, 'A', 'S',
+    'D',  'F', 'G', 'H', 'J', 'K', 'L', 'Ö', 'Ä', '°', RC_LSHIFT, 0x27, 'Y', 'X', 'C', 'V',
+    'B',  'N', 'M', ';', ':', '_', RC_RSHIFT, 0x00, RC_ALT, 0x20, RC_CAPSLOCK,RC_F1,RC_F2,RC_F3,RC_F4,RC_F5,
+    RC_F6,RC_F7,RC_F8,RC_F9,RC_F10,RC_NUM,RC_ROLLEN,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, RC_STANDBY, 0x00, 0x00, 0x00, 0x00, '>'
+};
+		  			
+
+int rcaltgrtable[] =
+{
+    0x00, RC_ESC, 0x00, '²', '³', 0x00, 0x00, 0x00, '{', '[', ']', '}', '\\', 0x00, 0x00, 0x00,
+    '@',  0x00, '.', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, '~', RC_RET1, RC_STRG, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, RC_LSHIFT, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00,  0x00, 'µ', 0x00, 0x00, 0x00, RC_RSHIFT, 0x00, RC_ALT, 0x20, RC_CAPSLOCK,RC_F1,RC_F2,RC_F3,RC_F4,RC_F5,
+    RC_F6,RC_F7,RC_F8,RC_F9,RC_F10,RC_NUM,RC_ROLLEN,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, RC_STANDBY, 0x00, 0x00, 0x00, 0x00, '|'
+};
+
+
 
 //************************************************************************************************
 // 	cMenuItem::cMenuItem()
@@ -258,6 +356,12 @@ void cMenuSeparatorItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 }
 
 
+int cMenu::start = 0;
+unsigned short cMenu::rccode = 0;
+#if HAVE_DVB_API_VERSION == 3
+struct input_event cMenu::ev;
+#endif
+
 //************************************************************************************************
 // 	cMenu()
 //************************************************************************************************
@@ -285,25 +389,201 @@ cMenu::~cMenu()
     }
 }
 
-//************************************************************************************************
-// 	cMenu::GetKey()
-//************************************************************************************************
-int cMenu::GetKey(int rc_fd)
+
+/******************************************************************************
+ * GetRCCode
+ ******************************************************************************/
+
+#if HAVE_DVB_API_VERSION == 3
+
+int cMenu::GetRCCode(int rc_fd)
 {
-    while (1)
-    {
-#ifdef HAVE_DREAMBOX_HARDWARE
-        unsigned short rckey = 0;
-        if (read(rc_fd, &rckey, 2) == 2)
-	    return rckey;
-#else
-        struct input_event iev;
-        if (read(rc_fd, &iev, sizeof(struct input_event)) == sizeof(struct input_event) && ((iev.value == 0) || (iev.value == 2)))
-	    return iev.code;
-#endif
-    }
-							    
+	static __u16 rc_last_key = KEY_RESERVED;
+	static __u16 rc_last_code = KEY_RESERVED;
+
+	if(read(rc_fd, &ev, sizeof(ev)) == sizeof(ev))
+	{
+		if(ev.value)
+		{
+			if(ev.code != rc_last_key)
+			{
+				rc_last_key = ev.code;
+
+				switch(ev.code)
+				{
+					case KEY_OK:
+
+						rccode = RC_OK;
+
+						break;
+
+					case KEY_RED:
+
+						rccode = RC_RED;
+
+						break;
+
+					case KEY_GREEN:
+
+						rccode = RC_GREEN;
+
+						break;
+
+					case KEY_YELLOW:
+
+						rccode = RC_YELLOW;
+
+						break;
+
+					case KEY_BLUE:
+
+						rccode = RC_BLUE;
+
+						break;
+
+					case KEY_HELP:
+
+						rccode = RC_HELP;
+
+						break;
+
+					case KEY_SETUP:
+
+						rccode = RC_DBOX;
+
+						break;
+
+					default:
+						if( ev.code > 0x7F )
+						{
+							rccode = 0;
+							if( ev.code == 0x110 )
+							{
+								rccode = RC_ON;
+							}
+						}
+						else
+						{
+							rccode = rctable[ev.code & 0x7F];
+						}
+						if( rc_last_code == RC_LSHIFT )
+						{
+							if( ev.code <= 0x56 )  //(sizeof(rcshifttable)/sizeof(int)-1)
+							{
+								rccode = rcshifttable[ev.code];
+							}
+						}
+						else if( rc_last_code == RC_ALTGR )
+						{
+							if( ev.code <= 0x56 )  //(sizeof(rcaltgrtable)/sizeof(int)-1)
+							{
+								rccode = rcaltgrtable[ev.code];
+							}
+						}
+						if( !rccode )
+						{
+							rccode = (unsigned short)-1;
+						}
+				}
+				rc_last_code = rccode;
+			}
+			else
+			{
+				rccode = (unsigned short)-1;
+			}
+		}
+		else
+		{
+			rccode = (unsigned short)-1;
+			rc_last_key = KEY_RESERVED;
+			rc_last_code = KEY_RESERVED;
+		}
+	}
+
+	return rccode;
 }
+
+#else
+
+int cMenu::GetRCCode(int rc_fd)
+{
+	static unsigned short LastKey = -1;
+	
+	// rc is in non-blocking mode, so it is possible to read either
+	// the rc 
+	// we return if we receive any key pressed
+	do
+	{
+		rccode = -1;
+
+		// first check if we have a key pressed on the remote-control	
+		int bytesavail = 0;
+		int bytesread = read(rc_fd, &rccode, sizeof(rccode));
+		
+		// if a key on the remote-control has been pressed
+		if( bytesread == 2 )
+		{
+			if( rccode == LastKey )
+			{
+				return rccode;
+			}
+			if( rccode == LastKey )
+			{
+				rccode = -1;
+				return rccode;
+			}
+
+			LastKey = rccode;
+			if((rccode & 0xFF00) == 0x5C00)
+			{
+				switch(rccode)
+				{
+					case KEY_UP:		rccode = RC_UP;			break;
+					case KEY_DOWN:		rccode = RC_DOWN;		break;
+					case KEY_LEFT:		rccode = RC_LEFT;		break;
+					case KEY_RIGHT:		rccode = RC_RIGHT;		break;
+					case KEY_OK:		rccode = RC_OK;			break;
+					case KEY_0:			rccode = RC_0;			break;
+					case KEY_1:			rccode = RC_1;			break;
+					case KEY_2:			rccode = RC_2;			break;
+					case KEY_3:			rccode = RC_3;			break;
+					case KEY_4:			rccode = RC_4;			break;
+					case KEY_5:			rccode = RC_5;			break;
+					case KEY_6:			rccode = RC_6;			break;
+					case KEY_7:			rccode = RC_7;			break;
+					case KEY_8:			rccode = RC_8;			break;
+					case KEY_9:			rccode = RC_9;			break;
+					case KEY_RED:		rccode = RC_RED;		break;
+					case KEY_GREEN:		rccode = RC_GREEN;		break;
+					case KEY_YELLOW:	rccode = RC_YELLOW;		break;
+					case KEY_BLUE:		rccode = RC_BLUE;		break;
+					case KEY_VOLUMEUP:	rccode = RC_PLUS;		break;
+					case KEY_VOLUMEDOWN:rccode = RC_MINUS;		break;
+					case KEY_MUTE:		rccode = RC_MUTE;		break;
+					case KEY_HELP:		rccode = RC_HELP;		break;
+					case KEY_SETUP:		rccode = RC_DBOX;		break;
+					case KEY_HOME:		rccode = RC_HOME;		break;
+					case KEY_POWER:		rccode = RC_STANDBY;	break;
+					default: 			rccode = -1;
+				}
+				return rccode;
+			}
+			else
+			{
+				if( rccode != 0xFFFF)
+				{
+					rccode &= 0x003F;
+				}
+			}
+			return rccode;
+		}
+
+		usleep(1000000/100);
+	}
+	while( rccode == 0xFFFF);
+	return rccode;
+}
+#endif
 
 //************************************************************************************************
 // 	Add()
@@ -434,7 +714,7 @@ EMenuValue cMenu::Show(int rc_fd)
     int rccode;
     while( 1 )
     {
-	rccode = cMenu::GetKey(rc_fd);
+	rccode = cMenu::GetRCCode(rc_fd);
 	if(!ProcessKey(rccode))
 	    break;
 	    
@@ -472,7 +752,7 @@ void cMenu::MsgBox(int rc_fd, char* header, char* question)
     int rccode;
     while( 1 )
     {
-	rccode = cMenu::GetKey(rc_fd);
+	rccode = cMenu::GetRCCode(rc_fd);
 	if(( rccode == KEY_OK ) || ( rccode == KEY_HOME))
 	{
 	    break;
@@ -557,7 +837,7 @@ void cMenu::SettingsMenu(int rc_fd)
     configfile.saveConfig(VDRVIEWER_SETTINGS_FILE);
 }
 
-int cMenu::start = 0;
+
 //************************************************************************************************
 // 	HandleMenu()
 //************************************************************************************************
