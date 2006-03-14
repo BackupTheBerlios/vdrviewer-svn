@@ -29,6 +29,8 @@ extern "C" {
 #define MENU_MIN_WIDTH 200 
 #define ITEM_HEIGHT 32
 
+#define REPEAT_TIMER 3
+
 
 #define RC_0                    '0'
 #define RC_1                    '1'
@@ -307,7 +309,7 @@ void cMenuSelItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 //************************************************************************************************
 bool cMenuSelItem::ProcessKey(int Key)
 {
-    if (Key == KEY_OK)
+    if (Key == RC_OK)
     {
 	m_RetValue = m_MenuValue;
 	return true;
@@ -356,12 +358,6 @@ void cMenuSeparatorItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 }
 
 
-int cMenu::start = 0;
-unsigned short cMenu::rccode = 0;
-#if HAVE_DVB_API_VERSION == 3
-struct input_event cMenu::ev;
-#endif
-
 //************************************************************************************************
 // 	cMenu()
 //************************************************************************************************
@@ -394,194 +390,182 @@ cMenu::~cMenu()
  * GetRCCode
  ******************************************************************************/
 
-#if HAVE_DVB_API_VERSION == 3
+#ifndef HAVE_DREAMBOX_HARDWARE
 
-int cMenu::GetRCCode(int rc_fd)
+int cMenu::GetRCCode(int rc_fd, int &rccode)
 {
-	static __u16 rc_last_key = KEY_RESERVED;
-	static __u16 rc_last_code = KEY_RESERVED;
-
-	if(read(rc_fd, &ev, sizeof(ev)) == sizeof(ev))
+    static int count = 0;
+    //get code
+    struct input_event ev;
+    static __u16 rc_last_key = KEY_RESERVED;
+    static __u16 rc_last_code = KEY_RESERVED;
+    if(read(rc_fd, &ev, sizeof(ev)) == sizeof(ev))
+    {
+	if(ev.value)
 	{
-		if(ev.value)
+	    if(ev.code == rc_last_key)
+	    {
+		if (count < REPEAT_TIMER)
 		{
-			if(ev.code != rc_last_key)
-			{
-				rc_last_key = ev.code;
-
-				switch(ev.code)
-				{
-					case KEY_OK:
-
-						rccode = RC_OK;
-
-						break;
-
-					case KEY_RED:
-
-						rccode = RC_RED;
-
-						break;
-
-					case KEY_GREEN:
-
-						rccode = RC_GREEN;
-
-						break;
-
-					case KEY_YELLOW:
-
-						rccode = RC_YELLOW;
-
-						break;
-
-					case KEY_BLUE:
-
-						rccode = RC_BLUE;
-
-						break;
-
-					case KEY_HELP:
-
-						rccode = RC_HELP;
-
-						break;
-
-					case KEY_SETUP:
-
-						rccode = RC_DBOX;
-
-						break;
-
-					default:
-						if( ev.code > 0x7F )
-						{
-							rccode = 0;
-							if( ev.code == 0x110 )
-							{
-								rccode = RC_ON;
-							}
-						}
-						else
-						{
-							rccode = rctable[ev.code & 0x7F];
-						}
-						if( rc_last_code == RC_LSHIFT )
-						{
-							if( ev.code <= 0x56 )  //(sizeof(rcshifttable)/sizeof(int)-1)
-							{
-								rccode = rcshifttable[ev.code];
-							}
-						}
-						else if( rc_last_code == RC_ALTGR )
-						{
-							if( ev.code <= 0x56 )  //(sizeof(rcaltgrtable)/sizeof(int)-1)
-							{
-								rccode = rcaltgrtable[ev.code];
-							}
-						}
-						if( !rccode )
-						{
-							rccode = (unsigned short)-1;
-						}
-				}
-				rc_last_code = rccode;
-			}
-			else
-			{
-				rccode = (unsigned short)-1;
-			}
+	    	    count++;
+		    rccode = -1;
+		    return 1;
+		}
+	    }
+	    else
+		count = 0;
+	    rc_last_key = ev.code;
+	    switch(ev.code)
+    	    {
+	    case KEY_UP:		rccode = RC_UP;			break;
+	    case KEY_DOWN:		rccode = RC_DOWN;		break;
+	    case KEY_LEFT:		rccode = RC_LEFT;		break;
+	    case KEY_RIGHT:		rccode = RC_RIGHT;		break;
+	    case KEY_OK:		rccode = RC_OK;			break;
+	    case KEY_RED:		rccode = RC_RED;		break;
+	    case KEY_GREEN:		rccode = RC_GREEN;		break;
+	    case KEY_YELLOW:		rccode = RC_YELLOW;		break;
+	    case KEY_BLUE:		rccode = RC_BLUE;		break;
+	    case KEY_HELP:		rccode = RC_HELP;		break;
+	    case KEY_SETUP:		rccode = RC_DBOX;		break;
+	    case KEY_HOME:		rccode = RC_HOME;		break;
+	    case KEY_POWER:		rccode = RC_STANDBY;		break;
+	    default:
+		if( ev.code > 0x7F )
+		{
+		    rccode = 0;
+		    if( ev.code == 0x110 )
+		    {
+	    		rccode = RC_ON;
+		    }
 		}
 		else
 		{
-			rccode = (unsigned short)-1;
-			rc_last_key = KEY_RESERVED;
-			rc_last_code = KEY_RESERVED;
+		    rccode = rctable[ev.code & 0x7F];
 		}
+		if( rc_last_code == RC_LSHIFT )
+		{
+		    if( ev.code <= 0x56 )  //(sizeof(rcshifttable)/sizeof(int)-1)
+		    {
+	    	        rccode = rcshifttable[ev.code];
+		    }
+		}
+		else if( rc_last_code == RC_ALTGR )
+		{
+		    if( ev.code <= 0x56 )  //(sizeof(rcaltgrtable)/sizeof(int)-1)
+		    {
+			rccode = rcaltgrtable[ev.code];
+		    }
+		}
+		else if( rc_last_code == RC_ALT )
+		{
+		    if((ev.code >=2) && ( ev.code <= 11 ))
+		    {
+			rccode = (ev.code-1) | 0x0200;
+		    }
+		}
+//	    	if( !rccode )
+		{
+//			rccode = -1;
+		}
+    	    }
+	    rc_last_code = rccode;
+	    return 1;
 	}
-
-	return rccode;
+	else
+	{
+	    rccode = -1;
+	    rc_last_key = KEY_RESERVED;
+	    rc_last_code = KEY_RESERVED;
+	}
+    }
+    
+    rccode = -1;
+    usleep(1000000/100);
+    return 0;
 }
 
 #else
 
-int cMenu::GetRCCode(int rc_fd)
+int GetRCCode(int rc_fd, int &rccode)
 {
-	static unsigned short LastKey = -1;
-	
-	// rc is in non-blocking mode, so it is possible to read either
-	// the rc 
-	// we return if we receive any key pressed
-	do
+    static int count = 0;
+    //get code
+    static unsigned short LastKey = -1;
+    rccode = -1;
+    int bytesavail = 0;
+    int bytesread = read(rc_fd, &rccode, 2);
+    unsigned short tmprc;
+    kbcode = 0;
+    
+    if (bytesread == 2)
+    {
+	if (read(rc, &tmprc, 2) == 2)
 	{
-		rccode = -1;
-
-		// first check if we have a key pressed on the remote-control	
-		int bytesavail = 0;
-		int bytesread = read(rc_fd, &rccode, sizeof(rccode));
-		
-		// if a key on the remote-control has been pressed
-		if( bytesread == 2 )
-		{
-			if( rccode == LastKey )
-			{
-				return rccode;
-			}
-			if( rccode == LastKey )
-			{
-				rccode = -1;
-				return rccode;
-			}
-
-			LastKey = rccode;
-			if((rccode & 0xFF00) == 0x5C00)
-			{
-				switch(rccode)
-				{
-					case KEY_UP:		rccode = RC_UP;			break;
-					case KEY_DOWN:		rccode = RC_DOWN;		break;
-					case KEY_LEFT:		rccode = RC_LEFT;		break;
-					case KEY_RIGHT:		rccode = RC_RIGHT;		break;
-					case KEY_OK:		rccode = RC_OK;			break;
-					case KEY_0:			rccode = RC_0;			break;
-					case KEY_1:			rccode = RC_1;			break;
-					case KEY_2:			rccode = RC_2;			break;
-					case KEY_3:			rccode = RC_3;			break;
-					case KEY_4:			rccode = RC_4;			break;
-					case KEY_5:			rccode = RC_5;			break;
-					case KEY_6:			rccode = RC_6;			break;
-					case KEY_7:			rccode = RC_7;			break;
-					case KEY_8:			rccode = RC_8;			break;
-					case KEY_9:			rccode = RC_9;			break;
-					case KEY_RED:		rccode = RC_RED;		break;
-					case KEY_GREEN:		rccode = RC_GREEN;		break;
-					case KEY_YELLOW:	rccode = RC_YELLOW;		break;
-					case KEY_BLUE:		rccode = RC_BLUE;		break;
-					case KEY_VOLUMEUP:	rccode = RC_PLUS;		break;
-					case KEY_VOLUMEDOWN:rccode = RC_MINUS;		break;
-					case KEY_MUTE:		rccode = RC_MUTE;		break;
-					case KEY_HELP:		rccode = RC_HELP;		break;
-					case KEY_SETUP:		rccode = RC_DBOX;		break;
-					case KEY_HOME:		rccode = RC_HOME;		break;
-					case KEY_POWER:		rccode = RC_STANDBY;	break;
-					default: 			rccode = -1;
-				}
-				return rccode;
-			}
-			else
-			{
-				if( rccode != 0xFFFF)
-				{
-					rccode &= 0x003F;
-				}
-			}
-			return rccode;
-		}
-
-		usleep(1000000/100);
+	    if (rccode == tmprc && count >= 0)
+		count++;
 	}
-	while( rccode == 0xFFFF);
-	return rccode;
+    }
+
+    if (bytesread == 2)
+    {
+	if (rccode == LastKey)
+	{
+	    if (count < REPEAT_TIMER)
+	    {
+    		if (count >= 0)
+		    count++;
+		rccode = -1;
+		return 1;
+	    }
+	}
+	else
+	    count = 0;
+	LastKey = rccode;
+	if ((rccode & 0xFF00) == 0x5C00)
+	{
+	    kbcode = 0;
+	    switch(rccode)
+	    {
+	    case KEY_UP:		rccode = RC_UP;			break;
+	    case KEY_DOWN:		rccode = RC_DOWN;		break;
+    	    case KEY_LEFT:		rccode = RC_LEFT;		break;
+	    case KEY_RIGHT:		rccode = RC_RIGHT;		break;
+	    case KEY_OK:		rccode = RC_OK;			break;
+	    case KEY_0:			rccode = RC_0;			break;
+	    case KEY_1:			rccode = RC_1;			break;
+	    case KEY_2:			rccode = RC_2;			break;
+	    case KEY_3:			rccode = RC_3;			break;
+	    case KEY_4:			rccode = RC_4;			break;
+	    case KEY_5:			rccode = RC_5;			break;
+	    case KEY_6:			rccode = RC_6;			break;
+	    case KEY_7:			rccode = RC_7;			break;
+	    case KEY_8:			rccode = RC_8;			break;
+	    case KEY_9:			rccode = RC_9;			break;
+	    case KEY_RED:		rccode = RC_RED;		break;
+	    case KEY_GREEN:		rccode = RC_GREEN;		break;
+	    case KEY_YELLOW:	rccode = RC_YELLOW;		break;
+	    case KEY_BLUE:		rccode = RC_BLUE;		break;
+	    case KEY_VOLUMEUP:	rccode = RC_PLUS;		break;
+	    case KEY_VOLUMEDOWN:rccode = RC_MINUS;		break;
+	    case KEY_MUTE:		rccode = RC_MUTE;		break;
+	    case KEY_HELP:		rccode = RC_HELP;		break;
+	    case KEY_SETUP:		rccode = RC_DBOX;		break;
+	    case KEY_HOME:		rccode = RC_HOME;		break;
+	    case KEY_POWER:		rccode = RC_STANDBY;	break;
+	    }
+	    return 1;
+	}
+	else
+	{
+	    rccode &= 0x003F;
+	}
+    	return 0;
+    }
+    
+    rccode = -1;
+    usleep(1000000/100);
+    return 0;
 }
 #endif
 
@@ -658,7 +642,7 @@ bool cMenu::ProcessKey(int Key)
 	
     switch (Key)
     {
-    case KEY_UP:
+    case RC_UP:
 	if (m_SelectedItem != m_ItemList.begin())
 	{
 	    TItemList::iterator old = m_SelectedItem;
@@ -675,7 +659,7 @@ bool cMenu::ProcessKey(int Key)
 	}
 	return true;
 	
-    case KEY_DOWN:
+    case RC_DOWN:
 	if (m_SelectedItem != m_ItemList.end())
 	{
 	    TItemList::iterator old = m_SelectedItem;
@@ -692,7 +676,7 @@ bool cMenu::ProcessKey(int Key)
 	}
 	return true;
 
-    case KEY_HOME:
+    case RC_HOME:
 	return false;
 	
     default:
@@ -706,15 +690,13 @@ bool cMenu::ProcessKey(int Key)
 EMenuValue cMenu::Show(int rc_fd)
 {
     IMPORT_FRAMEBUFFER_VARS;
-    
     gl_fillbox(0, 0, p_xsize, p_ysize, 0);
     Draw();
     ShowOsd(True);
-    
     int rccode;
     while( 1 )
     {
-	rccode = cMenu::GetRCCode(rc_fd);
+	cMenu::GetRCCode(rc_fd, rccode);
 	if(!ProcessKey(rccode))
 	    break;
 	    
@@ -752,8 +734,8 @@ void cMenu::MsgBox(int rc_fd, char* header, char* question)
     int rccode;
     while( 1 )
     {
-	rccode = cMenu::GetRCCode(rc_fd);
-	if(( rccode == KEY_OK ) || ( rccode == KEY_HOME))
+	cMenu::GetRCCode(rc_fd, rccode);
+	if(( rccode == RC_OK ) || ( rccode == RC_HOME))
 	{
 	    break;
 	}

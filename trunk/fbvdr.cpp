@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <errno.h>
 #ifdef HAVE_CONFIG_H
 	#include <config.h>
 #endif
@@ -268,8 +269,32 @@ static int mp_tcpOpen(const char *serverIp, unsigned short serverPort)
 	return fd;
 }
 
+static int mp_udpOpen(const char *serverIp, unsigned short serverPort)
+{
+	struct sockaddr_in ads;
+	socklen_t          adsLen;
+	int                fd;
 
-static void mp_tcpClose(int fd)
+	//-- tcp server --
+	//-----------------------
+	bzero((char *)&ads, sizeof(ads));
+	ads.sin_family      = AF_INET;
+	ads.sin_addr.s_addr = inet_addr(serverIp);
+	ads.sin_port        = htons(serverPort);
+	adsLen              = sizeof(ads);
+
+	//-- get socket --
+	//--------------------------------
+	if( (fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+	{
+	    dprintf("cannot open socket (%s) \n", strerror(errno));
+	}
+
+	return fd;
+}
+
+
+static void mp_tcpudpClose(int fd)
 {
 	if(fd != -1) close(fd);
 }
@@ -416,6 +441,23 @@ static ssize_t mp_tcpRead(struct pollfd *pH, char *buf, size_t count, int tio)
 }
 
 
+static ssize_t mp_udpRead(struct pollfd *pH, char *buf, size_t count, int tio)
+{
+	ssize_t n, nleft = count;
+	struct sockaddr_in cliAddr;
+	int cliAddrLen = sizeof (cliAddr);
+
+	while( (nleft>0) && (poll(pH, 1, tio) > 0) && (pH->events & pH->revents) && nStopPlaying == 0 )
+	{
+		n = recvfrom(pH->fd, buf, nleft, 0, (struct sockaddr *)&cliAddr, (socklen_t*)&cliAddrLen);
+		nleft -= n;
+		buf   += n;
+	}
+
+	return(count-nleft);
+}
+
+
 //== mp_startDMX ==
 //=================
 static void mp_startDMX(MP_CTX *ctx)
@@ -532,6 +574,8 @@ cleanup_stream_threads(){
 
 void
 cleanup_and_exit(char *msg, int ret) {
+
+	fcntl(rc_fd, F_SETFL, O_NONBLOCK);
         
         cleanup_stream_threads();
 
@@ -601,7 +645,7 @@ void *mp_ReceiveStream(void *sArgument)
     }
   }
   
-  mp_tcpClose(inFd);
+  mp_tcpudpClose(inFd);
   sleep(1);
   // Clear Ringbuffer
   ringbuffer_free(ringbuf);
@@ -758,7 +802,7 @@ void *mp_playStream(void *sArgument)
 	}
   }
 
-//JNJN  mp_tcpClose(ctx->inFd);
+//JNJN  mp_tcpudpClose(ctx->inFd);
   
   mp_closeDVBDevices(ctx);
 
@@ -851,6 +895,15 @@ get_fbinfo() {
 	fcntl(ms_fd, F_SETFL, O_NONBLOCK);
 	fcntl(ms_fd_usb, F_SETFL, O_NONBLOCK);
 #else
+#if HAVE_DVB_API_VERSION == 3
+	struct input_event ev;
+        read(rc_fd, &ev, sizeof(ev));
+        fcntl(rc_fd, F_SETFL, fcntl(rc_fd, F_GETFL) &~ O_NONBLOCK);
+#else
+	int rccode;
+        read(rc_fd, &rccode, sizeof(rccode));
+        fcntl(rc_fd, F_SETFL, O_NONBLOCK);
+#endif
 	global_framebuffer.kb_fd = -1;
 #endif
 #endif
@@ -2746,6 +2799,7 @@ extern "C" {
 
 			}
 		}
+		
 		return;
 	}
 }
