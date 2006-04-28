@@ -754,6 +754,7 @@ bool cMenu::PowerButtonMenu(int rc_fd, fbvnc_event_t *ev)
 	Menu.Add(new cMenuSelItem("VDR ausschalten", eMVVdrShutdown));
 	Menu.Add(new cMenuSeparatorItem());
 	Menu.Add(new cMenuSelItem("Stream synchronisieren", eMVResync));
+	Menu.Add(new cMenuSelItem("LCD umschalten", eMVToggleLCD));
 	//Menu.Add(new cMenuSeparatorItem());
 	//Menu.Add(new cMenuSelItem("Einstellungen", eMVSettings));
 	EMenuValue RetVal = Menu.Show(rc_fd);
@@ -776,7 +777,13 @@ bool cMenu::PowerButtonMenu(int rc_fd, fbvnc_event_t *ev)
 	    ev->evtype = FBVNC_EVENT_NULL;
 	    return true;
     	    break;
-	    
+
+	case eMVToggleLCD: // Toggle LCD
+	    ToggleLCD();
+	    ev->evtype = FBVNC_EVENT_NULL;
+	    return true;
+    	    break;
+
 	case eMVSettings: // Show Settings Menu
 	    SettingsMenu(rc_fd);
     	    break;
@@ -825,17 +832,36 @@ void cMenu::SettingsMenu(int rc_fd)
 //************************************************************************************************
 bool cMenu::HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev)
 {
-    if (iev.code == KEY_POWER)
-    {
-	if (iev.value == 1)
+	static time_t last_open=0;
+	
+	if (iev.code == KEY_POWER)
 	{
-	    ev->evtype = FBVNC_EVENT_NULL;  // ignore key pressed event
-	    return true;
+		if (iev.value == 1)
+		{
+			ev->evtype = FBVNC_EVENT_NULL;  // ignore key pressed event
+			return true;
+		}
+		
+		bool ret = PowerButtonMenu(rc_fd, ev);
+		
+		if (ret)
+			last_open = time(NULL);
+				
+		return ret;
 	}
 
-	return PowerButtonMenu(rc_fd, ev);	
-    }
+	ev->evtype = FBVNC_EVENT_NULL;
 
-    ev->evtype = FBVNC_EVENT_NULL;
-    return false;
+	
+	// Billiger Workaround gegen das zusätzliche Auswerten der OK/Home-Keys
+	// durch VNC beim verlassen des menüs
+	if (time(NULL) - last_open <= 1 && (iev.code == KEY_HOME || iev.code == KEY_OK) )
+	{
+		dprintf("Menü: OK/Home-Key unterdrückt\n");
+		return true;
+	}
+	
+
+	
+	return false;
 }

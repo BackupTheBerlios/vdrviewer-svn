@@ -19,6 +19,7 @@ enum EMenuValue
     eMVViewerClose,
     eMVVdrShutdown,
     eMVResync,
+    eMVToggleLCD,
     eMVSettings
 };
 

@@ -10,8 +10,6 @@
 #include <linux/dvb/video.h>
 #include <poll.h>
 
-
-
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -33,6 +31,7 @@
 #include <dbox/avs_core.h>
 #include <dbox/saa7126_core.h>
 #include <dbox/fp.h>
+#include <dbox/lcd-ks0713.h>
 #include <linux/fb.h>
 #include "input_fake.h"
 #ifndef HAVE_DREAMBOX_HARDWARE
@@ -40,6 +39,7 @@
 #endif
 
 #include <X11/keysym.h>
+
 
 #define STEP_PAN 30
 
@@ -53,6 +53,23 @@ extern "C" {
 }
 
 #include "viewermenu.h"
+
+// LCD
+typedef unsigned char screen_t[LCD_BUFFER_SIZE];
+#define LCD "/dev/dbox/lcd0"
+#include "font.h"
+#define FILLED 4
+int lcd;
+int sock_lcd;
+bool graph_lcd;
+screen_t screen, glcd_screen;
+
+
+// Controld
+//#include "../../neutrino/lib/controldclient/controldMsg.h"
+//#include "../../neutrino/lib/controldclient/controldclient.h"
+//#include "../../neutrino/src/neutrinoMessages.h"
+
 
 
 
@@ -72,15 +89,24 @@ int screenmode, fnc_old, saa_old, avs, saa;
 fbvnc_framebuffer_t global_framebuffer;
 int fb_fd;
 int rc_fd;
+bool lcd_info = false;
+double datarate=0;
 #ifdef HAVE_DREAMBOX_HARDWARE
 int ms_fd;
 int ms_fd_usb;
 #endif
 int blev;
-char terminate;
+char terminate=0;
 int gScale,sx,sy,ex,ey;
 int usepointer = 0;
-bool bResync = False;
+bool bResync = false;
+int lcd_port;
+int ts_port;
+int is_ac3=-1;
+int auto_aspratio;
+size_t readsize;
+size_t iPlaceToWrite;
+//CControldClient	*g_Controld;
 void fbvnc_close(void);
 Pixel ico_mouse[] = {
 ICO_WHITE,ICO_WHITE,ICO_WHITE,ICO_WHITE,
@@ -89,6 +115,17 @@ ICO_WHITE,ICO_BLACK,ICO_BLACK,ICO_WHITE,
 ICO_WHITE,ICO_WHITE,ICO_WHITE,ICO_WHITE,
 };
 
+//=======================
+//== DVB device states ==
+//=======================
+enum MP_DEVICE_STATE 
+{
+	DVB_DEVICES_UNDEF   = -1,
+	DVB_DEVICES_STOPPED = 0,
+	DVB_DEVICES_RUNNING = 1
+};
+
+static MP_DEVICE_STATE gDeviceState = DVB_DEVICES_UNDEF; 
 
 // Pacemaker's stuff Start
 /* How to call it ....
@@ -156,8 +193,7 @@ void setMoreTransparency( bool bDo )
 
 
 
-//char* sServerIP = "192.168.0.20";
-unsigned short int nPort = 20002;
+
 
 #define ADAP      "/dev/dvb/adapter0"
 #define ADEC ADAP "/audio0"
@@ -168,7 +204,7 @@ unsigned short int nPort = 20002;
 
 #define PF_BUF_SIZE   (348*188)
 #define PF_DMX_SIZE   (PF_BUF_SIZE + PF_BUF_SIZE/2)
-#define RINGBUFFERSIZE PF_BUF_SIZE*10
+#define RINGBUFFERSIZE PF_BUF_SIZE*50
 // original timeout: #define PF_RD_TIMEOUT 3000
 #define PF_RD_TIMEOUT 500
 #define PF_EMPTY      0
@@ -182,10 +218,7 @@ unsigned short int nPort = 20002;
 
 pthread_t oTSReceiverThread;
 pthread_t oPlayerThread;
-static int nStopPlaying;
-static off_t g_fileposition;
-
-
+pthread_t oLCDThread;
 
 
 //-- live stream item --
@@ -199,6 +232,9 @@ typedef struct
 	int                apid;
 	long long          zapid;
 } MP_LST_ITEM;
+
+enum e_playstate {eBufferRefill=0,eBufferRefillAll,ePlayInit,ePlay,ePause};
+
 
 //-- main player context --
 //-------------------------
@@ -222,9 +258,8 @@ typedef struct
 	off_t pos;
 	off_t fileSize;
 
-	int   readSize;
+	size_t   readSize;
 	char  dvrBuf[PF_BUF_SIZE];
-	bool  refillBuffer;
 	bool  startDMX;
 
 	bool  isStream;
@@ -234,7 +269,9 @@ typedef struct
 	int         it;
 	int         lst_cnt;
 	MP_LST_ITEM lst[PF_LST_ITEMS];
-
+	
+	enum e_playstate playstate;
+	
 } MP_CTX;
 
 
@@ -269,29 +306,6 @@ static int mp_tcpOpen(const char *serverIp, unsigned short serverPort)
 	return fd;
 }
 
-static int mp_udpOpen(const char *serverIp, unsigned short serverPort)
-{
-	struct sockaddr_in ads;
-	socklen_t          adsLen;
-	int                fd;
-
-	//-- tcp server --
-	//-----------------------
-	bzero((char *)&ads, sizeof(ads));
-	ads.sin_family      = AF_INET;
-	ads.sin_addr.s_addr = inet_addr(serverIp);
-	ads.sin_port        = htons(serverPort);
-	adsLen              = sizeof(ads);
-
-	//-- get socket --
-	//--------------------------------
-	if( (fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-	{
-	    dprintf("cannot open socket (%s) \n", strerror(errno));
-	}
-
-	return fd;
-}
 
 
 static void mp_tcpudpClose(int fd)
@@ -300,53 +314,15 @@ static void mp_tcpudpClose(int fd)
 }
 
 
-// checks if AR has changed an sets cropping mode accordingly (only video mode auto)
-void checkAspectRatio (int vdec, bool init)
-{
-
-	static video_size_t size;
-	static time_t last_check=0;
-
-	// only necessary for auto mode, check each 5 sec. max
-	//if(g_settings.video_Format != 0 || (!init && time(NULL) <= last_check+5))
-	//	return;
-
-	if(init)
-	{
-		if(ioctl(vdec, VIDEO_GET_SIZE, &size) < 0)
-			perror("[movieplayer.cpp] VIDEO_GET_SIZE");
-		last_check=0;
-		return;
-	}
-	else
-	{
-		video_size_t new_size;
-		if(ioctl(vdec, VIDEO_GET_SIZE, &new_size) < 0)
-			perror("[movieplayer.cpp] VIDEO_GET_SIZE");
-		if(size.aspect_ratio != new_size.aspect_ratio)
-		{
-			printf("[movieplayer.cpp] AR change detected in auto mode, adjusting display format\n");
-			video_displayformat_t vdt;
-			if(new_size.aspect_ratio == VIDEO_FORMAT_4_3)
-				vdt = VIDEO_LETTER_BOX;
-			else
-				vdt = VIDEO_CENTER_CUT_OUT;
-			if(ioctl(vdec, VIDEO_SET_DISPLAY_FORMAT, vdt))
-				perror("[movieplayer.cpp] VIDEO_SET_DISPLAY_FORMAT");
-			memcpy(&size, &new_size, sizeof(size));
-		}
-		last_check=time(NULL);
-	}
-}
-
-
 //== open/close DVB devices ==
 //============================
 static bool mp_openDVBDevices(MP_CTX *ctx)
 {
+	bool ret = true;
+	
 	//-- may prevent black screen after restart ... --
 	//------------------------------------------------
-	usleep(150000);
+	usleep(500000);
 
 	ctx->dmxa = -1;
 	ctx->dmxv = -1;
@@ -355,65 +331,73 @@ static bool mp_openDVBDevices(MP_CTX *ctx)
 	ctx->adec = -1;
 	ctx->vdec = -1;
 
-	if((ctx->dmxa = open(DMX, O_RDWR)) < 0
-		|| (ctx->dmxv = open(DMX, O_RDWR)) < 0
-		|| (ctx->dvr = open(DVR, O_WRONLY)) < 0
-		|| (ctx->adec = open(ADEC, O_RDWR)) < 0 || (ctx->vdec = open(VDEC, O_RDWR)) < 0)
+	if(	   (ctx->dmxa = open(DMX, O_RDWR | O_NONBLOCK)) < 0
+		|| (ctx->dmxv = open(DMX, O_RDWR | O_NONBLOCK)) < 0
+		|| (ctx->dvr =  open(DVR, O_WRONLY | O_NONBLOCK)) < 0
+		|| (ctx->adec = open(ADEC, O_RDWR | O_NONBLOCK)) < 0 
+		|| (ctx->vdec = open(VDEC, O_RDWR | O_NONBLOCK)) < 0)
 	{
-    if( ctx->dmxa < 0 )
-    {
-      dprintf("Device ctx->dmxa konnte nicht geoeffnet werden !!!!!\n");
-    }
-    if( ctx->dmxv < 0 )
-    {
-      dprintf("Device ctx->dmxv konnte nicht geoeffnet werden !!!!!\n");
-    }
-    if( ctx->dvr < 0 )
-    {
-      dprintf("Device ctx->dvr konnte nicht geoeffnet werden !!!!!\n");
-    }
-    if( ctx->adec < 0 )
-    {
-      dprintf("Device ctx->adec konnte nicht geoeffnet werden !!!!!\n");
-    }
-    if( ctx->vdec < 0 )
-    {
-      dprintf("Device ctx->vdec konnte nicht geoeffnet werden !!!!!\n");
-    }
+		if( ctx->dmxa < 0 )
+		{
+			dprintf("Device ctx->dmxa konnte nicht geoeffnet werden !!!!!\n");
+			ret = false;
+		}
+		if( ctx->dmxv < 0 )
+		{
+			dprintf("Device ctx->dmxv konnte nicht geoeffnet werden !!!!!\n");
+			ret = false;
+		}
+		if( ctx->dvr < 0 )
+		{
+			dprintf("Device ctx->dvr konnte nicht geoeffnet werden !!!!!\n");
+			ret = false;
+		}
+		if( ctx->adec < 0 )
+		{
+			dprintf("Device ctx->adec konnte nicht geoeffnet werden !!!!!\n");
+			ret = false;
+		}
+		if( ctx->vdec < 0 )
+		{
+			dprintf("Device ctx->vdec konnte nicht geoeffnet werden !!!!!\n");
+			ret = false;
+		}
     
 	}
-	return true;
-  
-  
-}static void mp_closeDVBDevices(MP_CTX *ctx)
+	
+	return ret;
+}
+
+static void mp_closeDVBDevices(MP_CTX *ctx)
 {
 	//-- may prevent black screen after restart ... --
 	//------------------------------------------------
 	usleep(150000);
+	dprintf("Closing DVB-Devices\n");
 	
-
-	if(ctx->vdec != -1)
+	if(ctx->vdec > 0)
 	{
 		ioctl (ctx->vdec, VIDEO_STOP);
 		close (ctx->vdec);
 	}
-	if(ctx->adec != -1)
+	if(ctx->adec > 0)
 	{
 		ioctl (ctx->adec, AUDIO_STOP);
 		close (ctx->adec);
 	}
 
-	if(ctx->dmxa != -1)
+	if(ctx->dmxa > 0)
 	{
 		ioctl (ctx->dmxa, DMX_STOP);
 		close(ctx->dmxa);
 	}
-	if(ctx->dmxv != -1)
+	if(ctx->dmxv > 0)
 	{
 		ioctl (ctx->dmxv, DMX_STOP);
 		close(ctx->dmxv);
 	}
-	if(ctx->dvr!= -1)	close(ctx->dvr);
+	if(ctx->dvr > 0)	
+		close(ctx->dvr);
 
 	ctx->dmxp = -1;
 	ctx->dmxa = -1;
@@ -430,7 +414,7 @@ static ssize_t mp_tcpRead(struct pollfd *pH, char *buf, size_t count, int tio)
 {
 	ssize_t n, nleft = count;
 
-	while( (nleft>0) && (poll(pH, 1, tio) > 0) && (pH->events & pH->revents) && nStopPlaying == 0 )
+	while( (nleft>0) && (poll(pH, 1, tio) > 0) && (pH->events & pH->revents) && terminate == 0 )
 	{
 		n = read(pH->fd, buf, nleft);
 		nleft -= n;
@@ -441,40 +425,14 @@ static ssize_t mp_tcpRead(struct pollfd *pH, char *buf, size_t count, int tio)
 }
 
 
-static ssize_t mp_udpRead(struct pollfd *pH, char *buf, size_t count, int tio)
+//== mp_stopDVBDevices ==
+//=======================ku
+static void mp_stopDVBDevices(MP_CTX *ctx)
 {
-	ssize_t n, nleft = count;
-	struct sockaddr_in cliAddr;
-	int cliAddrLen = sizeof (cliAddr);
-
-	while( (nleft>0) && (poll(pH, 1, tio) > 0) && (pH->events & pH->revents) && nStopPlaying == 0 )
-	{
-		n = recvfrom(pH->fd, buf, nleft, 0, (struct sockaddr *)&cliAddr, (socklen_t*)&cliAddrLen);
-		nleft -= n;
-		buf   += n;
-	}
-
-	return(count-nleft);
-}
-
-
-//== mp_startDMX ==
-//=================
-static void mp_startDMX(MP_CTX *ctx)
-{
-	if(ctx->startDMX)
-	{
-		ioctl (ctx->dmxa, DMX_START);	// audio first !
-		ioctl (ctx->dmxv, DMX_START);
-		ctx->startDMX = false;
-	}
-}
-
-
-//== mp_softReset ==
-//==================
-static void mp_softReset(MP_CTX *ctx, bool refill = true)
-{
+  if (gDeviceState != DVB_DEVICES_STOPPED)
+  {
+  	gDeviceState = DVB_DEVICES_STOPPED;
+  	
 	//-- stop DMX devices --
 	ioctl(ctx->dmxv, DMX_STOP);
 	ioctl(ctx->dmxa, DMX_STOP);
@@ -490,40 +448,58 @@ static void mp_softReset(MP_CTX *ctx, bool refill = true)
 
 	ctx->p.pid      = ctx->pida;
 	ctx->p.pes_type = DMX_PES_AUDIO;
-
-	ioctl (ctx->dmxa, DMX_SET_BUFFER_SIZE, PF_DMX_SIZE/4);
 	ioctl (ctx->dmxa, DMX_SET_PES_FILTER, &(ctx->p));
 
 	ctx->p.pid      = ctx->pidv;
 	ctx->p.pes_type = DMX_PES_VIDEO;
-	ioctl (ctx->dmxv, DMX_SET_BUFFER_SIZE, PF_DMX_SIZE);
 	ioctl (ctx->dmxv, DMX_SET_PES_FILTER, &(ctx->p));
 
-	//-- switch audio decoder bypass depending on audio type --
-	if(ctx->ac3 == 1)
-		ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
-	else
-		ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,1UL);	// bypass off
-
-	//-- start AV devices again --
-	ioctl(ctx->adec, AUDIO_PLAY);					// audio
-	ioctl(ctx->vdec, VIDEO_PLAY);					// video
-	ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL);	// needs sync !
-
-	//-- refill input buffer --
-	if (refill) ctx->refillBuffer = true;
-
-	//-- but never start demuxers here, because this will --
-	//-- be done outside (e.g. short before writing.)     --
-	ctx->startDMX = true;
+	usleep(150000);
+  }
 }
 
+//== mp_startDVBDevices ==
+//========================
+static void mp_startDVBDevices(MP_CTX *ctx)
+{
+	if (gDeviceState != DVB_DEVICES_RUNNING)
+	{
+		//-- start AV devices again and ... --
+		ioctl(ctx->adec, AUDIO_PLAY);             // audio
+		ioctl(ctx->vdec, VIDEO_PLAY);             // video
+		ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL); // needs sync !
+			
+		//-- ... demuxers also --
+		ioctl (ctx->dmxa, DMX_START);	// audio first !
+		ioctl (ctx->dmxv, DMX_START);
 
+		gDeviceState = DVB_DEVICES_RUNNING;
+	}
+}
+
+//== mp_freezeAV ==
+//=================
+static void mp_freezeAV(MP_CTX *ctx)
+{
+  if (gDeviceState == DVB_DEVICES_RUNNING)
+  {
+	//-- freeze (pause) AV playback immediate --
+	ioctl(ctx->vdec, VIDEO_FREEZE);
+	ioctl(ctx->adec, AUDIO_PAUSE);
+
+	//-- workaround: switch off decoder bypass for AC3 audio --
+	if(ctx->ac3 == 1)
+		ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE, 1UL);
+  }
+}
 
 //== mp_unfreezeAV ==
 //===================
 static void mp_unfreezeAV(MP_CTX *ctx)
 {
+  if (gDeviceState == DVB_DEVICES_RUNNING)
+  {
+
 	//-- continue AV playback immediate --
 	ctx->p.pid      = ctx->pida;
 	ctx->p.pes_type = DMX_PES_AUDIO;
@@ -534,51 +510,163 @@ static void mp_unfreezeAV(MP_CTX *ctx)
 
 	ioctl (ctx->dmxa, DMX_START);
 
-	ioctl(ctx->adec, AUDIO_PLAY);					// audio
+	ioctl(ctx->adec, AUDIO_PLAY);				// audio
 
-	ioctl(ctx->vdec, VIDEO_PLAY);					// video
-	ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL);	// needs sync !
+	ioctl(ctx->vdec, VIDEO_PLAY);				// video
+	ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL);		// needs sync !
+  }
 }
 
-
-//== mp_resyncA ==
-//===================
-static void mp_resyncDMX(MP_CTX *ctx)
+// checks if AR has changed an sets cropping mode accordingly (only video mode auto)
+void checkAspectRatio (int vdec, bool init)
 {
-	ioctl (ctx->dmxa, DMX_STOP);
-	ioctl (ctx->dmxa, DMX_START);
+
+	static video_size_t size;
+	static time_t last_check=0;
+
+	// only necessary for auto mode, check each 2 sec. max
+	if((!init && time(NULL) <= last_check+2) || auto_aspratio == 0 || vdec <= 0)
+		return;
+
+	if(init)
+	{
+		if(ioctl(vdec, VIDEO_GET_SIZE, &size) < 0)
+			perror("VIDEO_GET_SIZE");
+		last_check=0;
+		return;
+	}
+	else
+	{
+		video_size_t new_size;
+		if(ioctl(vdec, VIDEO_GET_SIZE, &new_size) < 0)
+			perror("VIDEO_GET_SIZE");
+		if(size.aspect_ratio != new_size.aspect_ratio)
+		{
+			video_displayformat_t vdt;
+			
+			if(new_size.aspect_ratio == VIDEO_FORMAT_4_3)
+			{
+				vdt = VIDEO_LETTER_BOX;
+				screenmode = 0;
+			}
+			else
+			{
+				vdt = VIDEO_CENTER_CUT_OUT;
+				screenmode = 1;
+			}
+			
+			dprintf("AR change detected in auto mode, adjusting display format %d\n", screenmode);
+			
+			if(ioctl(vdec, VIDEO_SET_DISPLAY_FORMAT, vdt))
+				perror("VIDEO_SET_DISPLAY_FORMAT");
+			memcpy(&size, &new_size, sizeof(size));
+			
+			ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
+			ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
+						
+		}
+		last_check=time(NULL);
+	}
+}
+
+int checkAC3(char* buf, int len, bool force_update)
+{
+	int ac3 = -1, off;
+	static int last_ac3=0;
+	static time_t last_check=0;
+	
+	if (force_update || time(NULL) <= last_check+1)
+	{
+		for (int i = 0; i < len && ac3 == -1; i++)
+		{
+			if (buf[i] == 0x47)
+			{
+				if (buf[i+1] & 0x40)
+				{
+					off = 0;
+					if ( buf[3+i] & 0x20)//adapt field?
+						off = buf[4+i] + 1;
+					
+				  	switch(buf[i+7+off])
+				  	{
+						case 0xBD: //PRIVATE_STREAM1:
+							ac3=1;
+						  	break;
+					  	case 0xC0 ... 0xDF:
+							ac3=0;
+						  	break;
+				  	}
+				}
+				i += 187;
+			 }
+			 if (ac3 >= 0) break;
+		}
+		
+	  	if (ac3 != ctx->ac3 && ac3 != -1)
+	   	{
+			ctx->ac3 = ac3;
+			last_ac3 = ac3;
+			
+			usleep(500000);
+			mp_stopDVBDevices(ctx);
+			if(ctx->ac3 == 1)
+				ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
+			else
+				ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,1UL);	// bypass off
+			
+			dprintf("AC3: %d\n", ctx->ac3);
+	
+		}
+	
+		last_check=time(NULL);
+	}
+	
+	return last_ac3;
 }
 
 // Pacemaker's stuff End
 
-void
-cleanup_stream_threads(){
-// Pacemaker's stuff Start
-        // Stop playing TransportStream
-        nStopPlaying = 1;
-
+void cleanup_threads()
+{
+	if (sock_lcd > 0)
+	{
+		dprintf("closing sock_lcd\n");
+        	shutdown(sock_lcd, SHUT_RD);
+        	close(sock_lcd);
+		usleep(150000);
+	}
+        
+        pthread_join (oLCDThread, NULL);
         pthread_join (oTSReceiverThread, NULL);
         pthread_join (oPlayerThread, NULL);
-        usleep(150000);
+        
+        ctx = NULL;
+        
+	dprintf("All Threads closed!\n");
+	
+	usleep(150000);
 
         // Resume zapit       
         system("/bin/pzapit -lsb");
         //int nTest = system("/bin/pzapit -p");
         //int nTest = system("/bin/zapit");
         usleep(150000);
-        
 
 // Pacemaker's stuff End
 }
 
 
-void
-cleanup_and_exit(char *msg, int ret) {
+void cleanup_and_exit(char *msg, int ret)
+{
+	terminate=1;
+	
+	//delete g_Controld;
 
 	fcntl(rc_fd, F_SETFL, O_NONBLOCK);
-        
-        cleanup_stream_threads();
-
+	fcntl(lcd, F_SETFL, O_NONBLOCK);
+	ioctl(lcd,LCD_IOCTL_CLEAR);
+	
+        cleanup_threads();
 	dprintf("Error:%s\n",msg);
 	if(ret==EXIT_SYSERROR)
 	{
@@ -589,12 +677,207 @@ cleanup_and_exit(char *msg, int ret) {
 	{
 		if(msg) fprintf(stderr, "%s\n", msg);
 	}
-
 	fbvnc_close();
 	list_destroy(global_framebuffer.overlays);
 	list_destroy(sched);
-	terminate=1;
 }
+
+
+
+void put_pixel(screen_t screen,int x, int y,char col)
+{
+  switch (col&3) {
+  case LCD_PIXEL_ON:
+    screen[((y/8)*LCD_COLS)+x]|=1<<(y%8);
+    break;
+  case LCD_PIXEL_OFF:
+    screen[((y/8)*LCD_COLS)+x]&=~(1<<(y%8));
+    break;
+  case LCD_PIXEL_INV:
+    screen[((y/8)*LCD_COLS)+x]^=1<<(y%8);
+    break;
+  }
+}
+
+void draw_horiz_line(screen_t screen,int x, int y,int x2, char col)
+{
+	int count;
+	
+	for(count=x;count<=x2;count++)
+		put_pixel(screen,count,y,col);
+}
+
+void draw_vert_line(screen_t screen,int x, int y,int y2, char col)
+{
+	int count;
+	
+	for(count=y;count<=y2;count++)
+		put_pixel(screen,x,count,col);
+}
+
+void draw_rectangle(screen_t screen,int x, int y,int x2, int y2, char col)
+{
+	
+	int x_count,y_count;
+
+	if(col&FILLED)
+	{
+		for(y_count=y;y_count<=y2;y_count++)
+		for(x_count=x;x_count<=x2;x_count++)
+		put_pixel(screen,x_count,y_count,col);
+	}
+	else
+	{
+		draw_horiz_line(screen,x,y,x2,col);
+		draw_horiz_line(screen,x,y2,x2,col);
+		draw_vert_line(screen,x,y,y2,col);
+		draw_vert_line(screen,x2,y,y2,col);
+	}
+}
+
+void draw_progressbar(screen_t screen,int x, int y, int height, int len, int max_val, int val, char col)
+{
+	int screen_val;
+	
+	if(val>max_val) max_val=val;
+	screen_val=x+((len*val)/max_val);
+	draw_rectangle(screen,x,y,x+len,y+height,(!((col&3)>0))|4);
+	draw_rectangle(screen,x,y,screen_val,y+height,((col&3)>0)|(col&4));
+}
+
+void render_string(screen_t screen,int x, int y, char *string)
+{
+	int x_count,y_count,pos;
+	for(pos=0;string[pos]!=0;pos++)
+		for(y_count=y;y_count<y+8;y_count++)
+			for(x_count=x+(8*pos);x_count<x+(8*(pos+1));x_count++)
+				put_pixel(screen,x_count,y_count,(font[(string[pos]*8)+y_count-y]>>(7-(x_count-(x+(8*pos)))))&1);
+}
+
+int draw_screen(screen_t screen,int lcd)
+{
+	return write(lcd,screen,LCD_BUFFER_SIZE);
+}
+
+void LCDInfo(char debug_info[] = "", bool refresh = false)
+{
+	static unsigned int l_rsize=0, l_wsize=0;
+	static int l_lcd=0, l_ac3=0, l_screenmode=0;
+	static double l_drate=1;
+	static bool l_graph_lcd=false;
+	
+	char string[100];		
+	
+	if (l_rsize != readsize || refresh)
+	{
+		draw_progressbar(screen,0,27,1,119,RINGBUFFERSIZE,readsize,LCD_PIXEL_ON | FILLED);
+		l_rsize = readsize;
+	}
+	
+	if (l_wsize != iPlaceToWrite || refresh)
+	{
+		draw_progressbar(screen,0,29,1,119,RINGBUFFERSIZE,iPlaceToWrite,LCD_PIXEL_ON | FILLED);
+		l_wsize = iPlaceToWrite;
+	}
+	
+	if (l_drate != datarate || refresh)
+	{
+		draw_progressbar(screen,0,21,4,119,10000,(int)datarate*1000,LCD_PIXEL_ON | FILLED);
+		sprintf(string, "R: %2.3f Mbit/s", datarate);
+		render_string(screen,0,12,string);
+		l_drate = datarate;
+	}
+
+	
+	if (l_ac3 != is_ac3 || screenmode != l_screenmode || refresh)
+	{
+		sprintf(string, "16:9 %s DD %s", screenmode == 1 ? "on " : "off", is_ac3 == 1 ? "on " : (is_ac3 == 0 ? "off" : "?  ") );
+		render_string(screen,0,33,string);
+		l_ac3 = is_ac3;
+		l_screenmode = screenmode;
+	}
+	
+	if (sock_lcd != l_lcd || graph_lcd != l_graph_lcd || refresh)
+	{
+		sprintf(string, "GraphLCD: %s", sock_lcd > 0 ? (graph_lcd ? "yes " : "wait") : "no  ");
+		render_string(screen,0,44,string);
+		l_lcd = sock_lcd;
+		l_graph_lcd = graph_lcd;
+	}
+	
+	if (debug_info != "" || refresh)
+	{
+		sprintf(string, "Info: %s", debug_info);
+		render_string(screen,0,55,string);
+	}
+		
+	if (lcd_info == true || graph_lcd == false || refresh)
+		draw_screen(screen,lcd);
+}
+
+void *updateLCD(void *sArgument)
+{
+	int lcd_mode;
+	screen_t buf;
+	
+	graph_lcd = false;
+	
+	lcd_mode=LCD_MODE_BIN;
+	if ((ioctl(lcd,LCD_IOCTL_ASC_MODE,&lcd_mode)<0) || (ioctl(lcd,LCD_IOCTL_CLEAR)<0))
+	{
+		dprintf("lcd ioctl - error setting LCD-mode/clearing LCD: %d\n",errno);
+	}
+
+	memset(screen,0,sizeof(screen));	
+	
+	render_string(screen,22,1, "VDR-Viewer");
+
+	LCDInfo("Init", true);
+	sock_lcd = mp_tcpOpen(hostname, lcd_port);
+	LCDInfo("Init", true);
+	
+	while (!terminate && sock_lcd > 0)
+	{
+		int len = recv(sock_lcd, buf, sizeof(buf), 0);
+		if (len <= 0)
+		{
+			perror("LCD: recv");
+			sleep(1);
+		}
+		else 
+		{
+			graph_lcd = true;
+			memset(glcd_screen,0,sizeof(glcd_screen));	
+
+			for (int y=0;y<64;y++)
+			{
+				for (int x=0;x<120/8;x++)
+				{
+					for (int k=0;k<8;k++)
+					{
+						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
+							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
+						else
+							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
+					} 
+				}
+			}
+			
+			if (lcd_info == false)
+				draw_screen(glcd_screen, lcd);
+		}
+	}
+
+	if (sock_lcd > 0)
+	{
+		close(sock_lcd);
+		sock_lcd = 0;
+	}
+	
+  	dprintf("LCD: Thread beendet\n");
+  	pthread_exit(NULL);
+}
+
 
 
 
@@ -602,226 +885,306 @@ ringbuffer_t *ringbuf;
 
 void *mp_ReceiveStream(void *sArgument)
 {
-  size_t rd, rSize;
-  rSize = PF_BUF_SIZE; // We let 10 Bytes left
+	size_t rd;
+	unsigned int bytes_read=0;
+	struct timeval oldtime, curtime;
+	int inFd, count=0;
+	char  dvrBuf[PF_BUF_SIZE];
+	
+	dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
+	
+	if ( (inFd = mp_tcpOpen(hostname, ts_port)) == -1 )
+	{
+		dprintf("Receiver: Cannot Connect! Exiting!",0);
+		terminate = 1;
+	}
+	else 
+	{
+		dprintf("Receicer: Connected\n");
+	}
 
-  dprintf("ReceiverThread gestartet\n");
-  dprintf("Server: %s", hostname);
+	struct pollfd pHandle;
+	pHandle.fd     = inFd;
+	pHandle.events = POLLIN | POLLPRI;
+	
+	gettimeofday(&oldtime, NULL);
+	
+	while( terminate == 0 )
+	{
+               	gettimeofday(&curtime, NULL);
+		double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
+               	if (secs > 3)
+               	{
+               		datarate = bytes_read / secs * 8 / 1000 / 1000;
+//			dprintf("Info: Rate %2.4f MBits/s\n", datarate);
+			oldtime = curtime;
+			bytes_read = 0;
+		}
+		
+		if (secs > 0.3)
+			LCDInfo();
+		
+		iPlaceToWrite = ringbuffer_write_space (ringbuf);
 
-  int   inFd;
-  if( (inFd = mp_tcpOpen(hostname, nPort)) == -1 ) 
-  { 
-    dprintf("Server-Socket konnte nicht geoeffnet werden !!!!!!!\n");
-    pthread_exit(NULL);
-  }
-  else dprintf("Server-Socket erfolgreich goeffnet.\n");
+		if ( PF_BUF_SIZE > iPlaceToWrite )
+		{
+			if (count > 50)
+			{
+				// This shouldn't happen
+				dprintf("Receiver: Reset da keine Daten gelesen werden!");
+				count=0;
+				ringbuffer_reset(ringbuf);
+				ctx->playstate = eBufferRefill;
+				LCDInfo("Recv. Err ");
+			}
+		
+			usleep(100000);
+			count++;
+			continue;
+		}
+		
+		count=0;
+		
+		rd = mp_tcpRead(&pHandle, dvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);    
 
-  struct pollfd pHandle;
-  pHandle.fd     = inFd;
-  pHandle.events = POLLIN | POLLPRI;
-  char  dvrBuf[PF_BUF_SIZE];
+		if ( rd > 0)
+		{
+			ringbuffer_write(ringbuf, dvrBuf, rd);
 
-  //ringbuffer_data_t vec[1];
-
-  while( nStopPlaying == 0 )
-  { 
-    size_t iPlaceToWrite = ringbuffer_write_space (ringbuf);
-    if ( rSize > iPlaceToWrite )
-    {
-  	usleep(100000);
-	continue;
-    }
-    
-    rd = mp_tcpRead(&pHandle, dvrBuf, rSize, PF_RD_TIMEOUT);    
-    if ( rd > 0 )
-    {// ToDo Put it into Ringbuffer
-	ringbuffer_write(ringbuf, dvrBuf, rd);
-    }
-    else
-    {
-	ringbuffer_reset(ringbuf);
-	mp_softReset(ctx, true);
-	dprintf("Reset Buffer!!!\n");
-    }
-  }
-  
-  mp_tcpudpClose(inFd);
-  sleep(1);
-  // Clear Ringbuffer
-  ringbuffer_free(ringbuf);
-  pthread_exit(NULL);
-  dprintf("ReceiverThread beendet\n");
+			if (ctx->playstate == ePause)
+				ctx->playstate = ePlayInit;
+		}
+		else
+		{
+			ctx->playstate = eBufferRefill;
+			//ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen
+			ringbuffer_reset(ringbuf);
+			dprintf("Receiver: Reset Buffer!!!\n");
+			LCDInfo("Reset     ");
+		}
+		
+		bytes_read += rd;
+	}
+	
+	if (inFd > 0)
+		mp_tcpudpClose(inFd);
+	
+	// Clear Ringbuffer
+	ringbuffer_free(ringbuf);
+	dprintf("Receiver: Thread beendet\n");
+	pthread_exit(NULL);
+	
 }
 
 
 
 void *mp_playStream(void *sArgument)
 {
-  int rd, rSize;
-  MP_CTX mpCtx;
-  ctx = &mpCtx;
-  
-  struct pollfd pHandle;
-  
-  if(mp_openDVBDevices(ctx)) 
-  {
-    dprintf("DVB-Devices erfolgreich geoeffnet\n");
-  }
-  else dprintf("Konnte einige DVB-Devices nicht oeffnen !!!!!!!!!!!!!!\n");
+	size_t rd, rSize;
+	
+	struct pollfd pHandle;
+	
+	if (mp_openDVBDevices(ctx)) 
+	{
+		dprintf("DVB-Devices erfolgreich geoeffnet\n");
+		checkAspectRatio(ctx->vdec, true);
+	}
+	else
+	{
+		dprintf("Konnte einige DVB-Devices nicht oeffnen!!!!!!!!!!!!!!\n");
+		terminate = 1;
+		LCDInfo("DVB Err  ");
+		sleep(3);
+	}
 
-  //CHintBox *bufferingBox;
-  //bufferingBox = new CHintBox(LOCALE_MESSAGEBOX_INFO, g_Locale->getText(LOCALE_MOVIEPLAYER_BUFFERING));	// UTF-8
-
-  ctx->pos = 0L;
-  ctx->canPause = false;
-
-	ctx->readSize = PF_BUF_SIZE/2;
-/*	
-	dprintf("Server: %s", hostname);
-
-  if( (ctx->inFd = mp_tcpOpen(hostname, nPort)) == -1 ) 
-  { 
-    dprintf("Server-Socket konnte nicht geoeffnet werden !!!!!!!\n");
-    mp_closeDVBDevices(ctx);
-    pthread_exit(NULL);
-  }
-  else dprintf("Server-Socket erfolgreich goeffnet.\n");
-*/  
-
-  ctx->pidv     = 99;
-  ctx->pida     = 100;
-  ctx->ac3      = 0;
-
-
-  mp_softReset(ctx);
-
-  //-- aspect ratio init --
-	//checkAspectRatio(ctx->vdec, true);
-
-  //-- install poller --
+	//-- install poller --
 	pHandle.fd     = ctx->inFd;
 	pHandle.events = POLLIN | POLLPRI;
 	ctx->pH        = &pHandle;
 
-  dprintf("Starte Player-Loop\n");
-
-//  int debugzaehler = 0;
-  while( nStopPlaying == 0 )
-  {
-    //-- after device reset read double amount of stream data --
-	rSize = (ctx->startDMX)? ctx->readSize*2 : ctx->readSize;
-
-	int readsize = ringbuffer_read_space (ringbuf);
-//	if (debugzaehler == 0 ) dprintf("Buffersize %d %d\n", readsize, c);
-//	if (++debugzaehler > 5 ) debugzaehler = 0;  
-	if ( ctx->refillBuffer )
-	{
-	    if (ctx->startDMX)
-	    {
-		int removed = ringbuffer_remove_bad_frame(ringbuf);
-		dprintf("removed %d bad frames --\n", removed);
-	    }
-
-	    dprintf("refill Buffer --\n");
-	    
-	    if ( readsize >= RINGBUFFERSIZE-PF_BUF_SIZE )
-	    {
-		//mp_resyncDMX(ctx);
-		//
-	        //bufferingBox->hide();
-	        ctx->refillBuffer = false;
-		ioctl (ctx->dmxa, DMX_START);
-            }
-	    else  // ToDo wait until RingBuffer is full enought
-            {
-		//bufferingBox->paint();
-		sleep(1);
-		continue;
-	    }
-	}
-
-//JNJN    rd = mp_tcpRead(ctx->pH, ctx->dvrBuf, rSize, PF_RD_TIMEOUT);
-    //read(ctx->pH->fd, ctx->dvrBuf, rSize);
-
-	if(readsize > rSize)
-	{
-		readsize = rSize;
-	}
-
-	rd = ringbuffer_read(ringbuf, ctx->dvrBuf, (readsize/188)*188 );
-
-    ctx->pos += rd;
-		g_fileposition = ctx->pos;
-    //dprintf("Puffergroesse: %d, Gelesene Bytes: %d\n",rSize, rd);
-
-    // Falls der Datenstrom abgebrochen ist -> Neuinitialisierung versuchen. 
-    // Problem: ffnetdev sendet keine Bytes, falls der VDR auf Pause steht. Dann greift der Timeout, 
-    // in der funktion mp_tcpRead, was im original movieplayer zum abbruch der Verbindung fÃ¼hrt.
-    // Dieses Verhalten kÃ¶nnen wir hier aber nicht brauchen.
-    if(rd != rSize && nStopPlaying == 0 )
-    {
-      dprintf("Datenstrom abgebrochen. Versuche Neuinitialisierung\n");
-//      ringbuffer_reset(ringbuf);
-//      mp_softReset(ctx);
-      ioctl (ctx->dmxa, DMX_STOP);
-      ctx->refillBuffer = true;
-      continue;
-    }
-    
-    if (bResync)
-    {
-	mp_softReset(ctx);
-	bResync = False;
-    }
+	ctx->playstate = eBufferRefill;
 	
+	bool dvbreset = false, freezed = false;
+	static time_t play_begun=0;
 
-    //checkAspectRatio(ctx->vdec, false);
-    
-    //-- after device reset, DMX devices --
-		//-- has to be started here ...      --
-		mp_startDMX(ctx);	// starts only if stopped !
+	dprintf("Starte Player-Loop\n");
+	
+	while( terminate == 0 )
+	{
+		if (ctx->playstate == ePause)
+		{
+			if (!freezed)
+			{
+				mp_freezeAV(ctx);
+				freezed = true;
+				dprintf("Player: Freezing\n");
+			}
 
-    //-- write stream data now --
-	int done = 0;
-	int wr;
-	while (rd > 0) {
-	    wr = write(ctx->dvr, &ctx->dvrBuf[done], rd);
-	    if (wr < 0) {
-    		//if (errno != EAGAIN) {
-		//    dprintf("PlayStream: write error\n");
-		//    nStopPlaying = 1;
-		//    continue;
-		//}
-		//else {
-		    usleep(1000);
-		    continue;
-		//}
-	    }
-	    rd   -= wr;
-	    done += wr;
+			play_begun = time(NULL);
+			LCDInfo("Pause    ");
+			usleep(200000);
+			continue;
+		}
+		
+		readsize = ringbuffer_read_space(ringbuf);
+		if ( ctx->playstate == eBufferRefill || ctx->playstate == eBufferRefillAll) 
+		{
+			unsigned int buffer;
+			usleep(500000);
+			
+			mp_stopDVBDevices(ctx);
+			
+			if (ctx->playstate == eBufferRefillAll)
+				buffer = (int)(RINGBUFFERSIZE * 0.95);
+			else
+				buffer = (int)(RINGBUFFERSIZE / 4);
+			
+			if (readsize < buffer)
+			{
+				if (play_begun != time(NULL))
+				{
+					play_begun = time(NULL);
+					if (ctx->playstate == eBufferRefillAll)
+					{
+						dprintf("Player: Buffering ALL\n");
+						LCDInfo("Buf. All  ");
+					}	
+					else
+					{
+						dprintf("Player: Buffering\n");
+						LCDInfo("Buffer    ");
+					}
+
+				}
+				
+				continue;
+			}
+			
+			dprintf("Player: Buffering done\n");
+			
+			play_begun = time(NULL);
+			
+			if (dvbreset)
+			{
+				play_begun -= 5; // damit beim nächsten mal kein dvb-reset ausgelöst wird!
+				dvbreset = false;
+			}
+			
+			ctx->playstate = ePlayInit;
+		}
+		
+		rd = ringbuffer_read(ringbuf, ctx->dvrBuf, ctx->readSize);
+	
+		//dprintf("Puffergroesse: %d, Gelesene Bytes: %d\n",rSize, rd);
+		
+		// Falls der Datenstrom abgebrochen ist -> Neuinitialisierung versuchen. 
+		// Problem: ffnetdev sendet keine Bytes, falls der VDR auf Pause steht. Dann greift der Timeout, 
+		// in der funktion mp_tcpRead, was im original movieplayer zum abbruch der Verbindung führt.
+		// Dieses Verhalten können wir hier aber nicht brauchen.
+		//
+		// wenn nicht bereits durch Reciever ein Refill initiiert wurde, dann den
+		// Buffer komplett füllen um einen erneuten Buffer-underrun zu vermeiden
+		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize || readsize < ctx->readSize || bResync) )
+		{
+			dprintf("Datenstrom abgebrochen oder ReSync -> Neuinit!\n");
+			dprintf("play: %ds buffer:%d read:%d to_read:%d \n", time(NULL) - play_begun, readsize, rd, ctx->readSize);
+
+			if (bResync)
+			{
+				ctx->playstate = eBufferRefill;
+				LCDInfo("Resync    ");
+			}
+			else if ( (time(NULL)-play_begun) > 4) // über 4 Sekunden -> kein DVB-Reset
+			{
+				ctx->playstate = eBufferRefillAll;
+				dvbreset = false;
+			}
+			else
+			{
+				// Manchmal kommt es vor, dass beim Start der Wiedergabe die dbox
+				// nicht richtig will. Oft werden dann die Daten nicht richtig gelesen
+				// und es würde ein Komplettbuffering ausgelöst werden
+				dprintf("Player: Evtl hängt nur der Demux. Versuche NeuInit!\n");
+				
+				// wenn es das 2. mal nicht klappt dann den Buffer wieder füllen
+				if (dvbreset == true)
+				{
+					ctx->playstate = eBufferRefill;
+					LCDInfo("DVB Init2 ");
+				}
+				else
+				{
+					ctx->playstate = ePlayInit;
+					LCDInfo("DVB Init  ");
+				}
+
+				usleep(600000);
+				mp_stopDVBDevices(ctx);
+
+				dvbreset = true;
+			}
+
+			bResync = false;
+			
+			continue;
+		}
+
+		if (ctx->playstate == ePlayInit)
+		{
+			ctx->playstate = ePlay;
+			LCDInfo("Playing   ");
+			dprintf("Player: Playing\n");
+			is_ac3 = checkAC3(ctx->dvrBuf, rd, true);
+		}
+		else
+			is_ac3 = checkAC3(ctx->dvrBuf, rd, false);
+		
+		checkAspectRatio(ctx->vdec, false);
+		
+	    	//-- write stream data now --
+		int done = 0;
+		int wr;
+		while (rd > 0)
+		{
+			wr = write(ctx->dvr, &ctx->dvrBuf[done], rd);
+			
+			if (wr < 0)
+			{
+				perror("Player: Stream write error");
+				usleep(1000);
+				continue;
+			}
+			rd   -= wr;
+			done += wr;
+		}
+	    	mp_startDVBDevices(ctx);
+	    	
+		if (freezed)
+		{
+			mp_unfreezeAV(ctx);
+			freezed = false;
+		}
+	    	
 	}
-  }
 
-//JNJN  mp_tcpudpClose(ctx->inFd);
-  
-  mp_closeDVBDevices(ctx);
+  	mp_closeDVBDevices(ctx);
 
-  //delete bufferingBox;
-  
-  sleep(1);
-  
-//  pthread_exit(NULL);
-  ctx = NULL;
+  	dprintf("Player-Thread beendet\n");
 
-  dprintf("Player-Thread beendet\n");
+	pthread_exit(NULL);
+  	
+
 }
-
 
 void Resync()
 {
     bResync = True;
 }
 
+void ToggleLCD()
+{
+	lcd_info = lcd_info ? false : true;
+}
 
 extern "C"
 {
@@ -835,8 +1198,7 @@ extern "C"
 }
 
 
-void
-get_fbinfo() {
+void get_fbinfo() {
 	struct fb_fix_screeninfo finf;
 	struct fb_var_screeninfo vinf;
 #define FFB fb_fd
@@ -876,9 +1238,7 @@ get_fbinfo() {
 	/* Map fb into memory */
 	off_t offset = 0;
 	global_framebuffer.smem_len = finf.smem_len;
-	if( (global_framebuffer.p_buf=(unsigned short *)mmap((void *)0,finf.smem_len,
-																		  PROT_READ | PROT_WRITE,
-																		  MAP_SHARED, fb_fd, offset)) == (void *)-1 )
+	if( (global_framebuffer.p_buf=(unsigned short *)mmap((void *)0,finf.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, offset)) == (void *)-1 )
 	{
 		cleanup_and_exit("fb mmap failed", EXIT_ERROR);
 	}
@@ -939,8 +1299,7 @@ void ShowOsd(Bool show) {
 }
 
 
-void
-fbvnc_init() {
+void fbvnc_init() {
 	int v_xsize = si.framebufferWidth;
 	int v_ysize = si.framebufferHeight;
 
@@ -998,12 +1357,11 @@ fbvnc_init() {
 	}
 	ioctl(saa, SAAIOGWSS, &saa_old);
 
-	ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
-	ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
+	//ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
+	//ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
 }
 
-void
-fbvnc_close() {
+void fbvnc_close() {
 
 #ifdef HAVE_DREAMBOX_HARDWARE
 	if (global_framebuffer.kb_fd != -1)
@@ -1077,8 +1435,7 @@ struct sched
 	int event;
 };
 
-int
-cmp_sc(struct sched *A, struct sched *B)
+int cmp_sc(struct sched *A, struct sched *B)
 {
 	if(A->tv_sec < B->tv_sec) return -1;
 	if(A->tv_sec > B->tv_sec) return  1;
@@ -1098,8 +1455,7 @@ cmp_sc_p(void *a, void *b)
 }
 #endif
 
-void
-schedule_add(List *s, int ms_delta, int event)
+void schedule_add(List *s, int ms_delta, int event)
 {
 	struct timeval tv;
 	struct sched sc;
@@ -1133,8 +1489,7 @@ schedule_add(List *s, int ms_delta, int event)
 	}
 }
 
-void
-schedule_delete(List *s, int event)
+void schedule_delete(List *s, int event)
 {
 	List *p;
 
@@ -1150,8 +1505,7 @@ schedule_delete(List *s, int event)
 	if(p)	list_remove(s, p);
 }
 
-int
-schedule_get_next(List *s, struct timeval *tv)
+int schedule_get_next(List *s, struct timeval *tv)
 {
 	List *p = s->next;
 	struct sched *nv;
@@ -1183,8 +1537,7 @@ schedule_get_next(List *s, struct timeval *tv)
 	return nv->event;
 }
 
-void
-fd_copy(fd_set *out, fd_set *in, int n)
+void fd_copy(fd_set *out, fd_set *in, int n)
 {
 	int i;
 	FD_ZERO(out);
@@ -1202,8 +1555,7 @@ fd_copy(fd_set *out, fd_set *in, int n)
 
 #define RetEvent(e) do { ev->evtype = (e); return (e); } while(0)
 
-enum fbvnc_event 
-fbvnc_get_event (fbvnc_event_t *ev, List *sched)
+enum fbvnc_event fbvnc_get_event (fbvnc_event_t *ev, List *sched)
 {
 	fd_set rfds, wfds;
 	int i,ret;
@@ -1554,28 +1906,80 @@ dprintf("reading ms_fd\n");
 		if(count == sizeof(struct input_event))
 		{
 
-			dprintf("Input event: \ntime: %d.%d\ntype: %d\ncode: %d\nvalue: %d\n",
+			dprintf("Input event: time: %d.%d type: %d code: %d value: %d\n",
 				(int)iev.time.tv_sec,(int)iev.time.tv_usec,iev.type,iev.code,iev.value);
 
-
                         // pacemaker's and Zwer2k's code start
+
+			static bool mute = false;
+			static char volume = 255;
+			static int keypress_count = 0;
+
 			
 			bool handled = cMenu::HandleMenu(rc_fd, iev, ev);
-			dprintf("dprintf: handled: %d evtype: %d\n", handled, ev->evtype);
+			
+			dprintf("handled: %d evtype: %d\n", handled, ev->evtype);
 			if (!handled)
 			{
-			    if (ev->evtype == FBVNC_EVENT_NULL)
-			    {
-				dprintf("dprintf: Sende Code: %d Value: %d\n", iev.code, iev.value);
-				printf("printf: Sende Code: %d Value: %d\n", iev.code, iev.value);
-				if ((iev.value == 0) || (iev.value == 2))
+			   	if (ev->evtype == FBVNC_EVENT_NULL)
+			    	{
+				if (iev.value != 2 || keypress_count > 1)
 				{
-				    SendKeyEvent(iev.code, 1);
+	    				if (iev.code == KEY_VOLUMEUP || iev.code == KEY_VOLUMEDOWN )
+					{
+						if (iev.value == 1)
+						{
+							if (iev.code == KEY_VOLUMEUP)
+							{
+								//g_Controld->setVolume(60, CControld::TYPE_LIRC);
+								volume = volume > 245 ? 255 : volume + 10;
+							}
+							else 
+							{
+								//g_Controld->setVolume(40, CControld::TYPE_LIRC);
+								volume = volume < 10 ? 0 : volume - 10;
+							}
+								
+							//g_Controld->setVolume(volume, CControld::TYPE_OST);
+							//g_Controld->setVolume(volume, CControld::TYPE_AVS);
+						}
+						
+					}
+					else if (iev.code == KEY_MUTE)
+					{
+						if (iev.value == 1)
+						{
+							if (mute)
+							{
+								//g_Controld->Mute(CControld::TYPE_OST);
+								//g_Controld->Mute(CControld::TYPE_AVS);
+								//g_Controld->Mute(CControld::TYPE_LIRC);
+								mute = false;
+							}
+							else
+							{
+								//g_Controld->UnMute(CControld::TYPE_OST);
+								//g_Controld->UnMute(CControld::TYPE_AVS);
+								//g_Controld->UnMute(CControld::TYPE_LIRC);
+								mute = true;
+							}
+						}
+					}
+  				    	else
+  				    	{ 
+				    		SendKeyEvent(iev.code, iev.value == 1 ? 0 : 1);
+				    		dprintf("Sende Code: %d Value: %d\n", iev.code, iev.value);
+				    	}
+				    	
+				    	if (iev.value != 2)
+  				    		keypress_count = 0;
 				}
-				else
+				else if (iev.value == 2)
 				{
-				    SendKeyEvent(iev.code, 0);
+			    		dprintf("Code-Senden unterdrückt! %d\n", keypress_count);
+				    	keypress_count++;
 				}
+
 				RetEvent(FBVNC_EVENT_NULL);
 			    }
 			    else
@@ -1762,9 +2166,9 @@ dprintf("reading ms_fd\n");
             // codes
             else if(iev.code == KEY_HOME)
             {
-               if(iev.value==1)
+               //if(iev.value==1)
                   RetEvent(FBVNC_EVENT_NULL); // ignore key pressed event
-               retval = FBVNC_EVENT_QUIT;
+               //retval = FBVNC_EVENT_QUIT;
             }
 
             else if(iev.code == KEY_HELP)
@@ -1865,9 +2269,9 @@ dprintf("reading ms_fd\n");
             {
                if(iev.value==1)
                   RetEvent(FBVNC_EVENT_NULL); // ignore key pressed event
-				screenmode = 1-screenmode;
-				ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
-				ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
+				//screenmode = 1-screenmode;
+				//ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
+				//ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
             }
             else if(iev.code == BTN_LEFT)
             {
@@ -2079,8 +2483,7 @@ dprintf("reading ms_fd\n");
 	return(fbvnc_event)0;
 }
 
-void 
-scaledPointerEvent(int xp, int yp, int button) {
+void scaledPointerEvent(int xp, int yp, int button) {
 	IMPORT_FRAMEBUFFER_VARS
 
 	SendPointerEvent(xp*v_scale + v_x0, yp*v_scale + v_y0, button);
@@ -2092,8 +2495,7 @@ List *sched;
 #define FDNUM_VNC 0
 #define FDNUM_PNM 1
 
-void
-save_viewport(struct viewport *dst) {
+void save_viewport(struct viewport *dst) {
 	IMPORT_FRAMEBUFFER_VARS
 
 	dst->v_xsize = v_xsize;
@@ -2102,8 +2504,7 @@ save_viewport(struct viewport *dst) {
 	dst->v_scale = v_scale;
 }
 
-void
-activate_viewport(struct viewport *src) {
+void activate_viewport(struct viewport *src) {
 	global_framebuffer.v_xsize = src->v_xsize;
 	global_framebuffer.v_ysize = src->v_ysize;
 	global_framebuffer.v_buf = src->v_buf;
@@ -2112,8 +2513,7 @@ activate_viewport(struct viewport *src) {
 
 static struct viewport v_img;
 
-void
-open_pnm_fifo(int *fdp)
+void open_pnm_fifo(int *fdp)
 {
 	dprintf("open_pnm_fifo()\n");
 	int pnmfd;
@@ -2125,8 +2525,7 @@ open_pnm_fifo(int *fdp)
 	*fdp = pnmfd;
 }
 
-void
-load_pnm_image(int *fdp)
+void load_pnm_image(int *fdp)
 {
 	dprintf("load_pnm_image()\n");
 	static FILE *f = 0;
@@ -2153,12 +2552,12 @@ load_pnm_image(int *fdp)
 	{
 		fclose(f);
 		f=0;
+		
 		open_pnm_fifo(fdp);
 	}
 }
 
-void
-show_pnm_image() {
+void show_pnm_image() {
 	dprintf("show_pnm_image()\n");
 	struct viewport v_save;
 	static int kx0=0, ky0=0;
@@ -2235,13 +2634,14 @@ show_pnm_image() {
 
 }
 
+
 extern "C" {
-	void plugin_exec(PluginParam *par) {
+	void plugin_exec(PluginParam *par)
+	{
 		fbvnc_overlay_t *active_overlay = 0;
 		int panning = 0;
 		int readfd[2];	/* pnmfd and/or rfbsock */
 		static int pnmfd = -1;
-		int lcd;
 
 
 		fb_fd = lcd = rc_fd = sx = ex = sy = ey = -1;
@@ -2289,11 +2689,14 @@ extern "C" {
 
 		char szServerNr[20] = "";
 		char szServer[20];
-		char szPort[20];
+		char szVNCPort[20];
+		char szLCDPort[20];
+		char szTSPort[20];
 		char szScale[20];
 		char szServerScale[20];
 		char szPasswd[20];
 		char szMouse[20];
+		char szAutAspRatio[20];
 #ifdef HAVE_DREAMBOX_HARDWARE
 		unsigned short dummy;
 		while (read(rc_fd, &dummy, 2) > 0);
@@ -2309,11 +2712,17 @@ extern "C" {
 			return;
 		}
 		sprintf(szServer      ,"server%s",szServerNr);
-		sprintf(szPort        ,"port%s",szServerNr);
 		sprintf(szScale       ,"scale%s",szServerNr);
 		sprintf(szServerScale ,"server_scale%s",szServerNr);
 		sprintf(szPasswd      ,"passwd%s",szServerNr);
 		sprintf(szMouse       ,"mouse%s",szServerNr);
+		
+		sprintf(szVNCPort     ,"osdport%s",szServerNr);
+		sprintf(szTSPort      ,"streamingport%s",szServerNr);
+		sprintf(szLCDPort     ,"lcdport%s",szServerNr);
+		sprintf(szAutAspRatio ,"autoaspectratio%s",szServerNr);
+		
+		
 		
 		
 #ifdef HAVE_DREAMBOX_HARDWARE
@@ -2360,8 +2769,11 @@ extern "C" {
 		CConfigFile config('\t');
 		config.loadConfig(CONFIGDIR "/vdr.conf"); // ToDo JNJN
 		strncpy(hostname, config.getString(szServer,"vnc").c_str(), 254);
-		port=config.getInt32(szPort,5900);
+		int vnc_port=config.getInt32(szVNCPort,20001);
+		ts_port=config.getInt32(szTSPort,20002);
+		lcd_port=config.getInt32(szLCDPort,20003);
 		gScale=config.getInt32(szScale,1);
+		auto_aspratio=config.getInt32(szAutAspRatio,0);
 		serverScaleFactor = config.getInt32(szServerScale,1);
 		rcCycleDuration = config.getInt32("rc_cycle_duration",225)*1000;
 		rcTest = config.getInt32("rc_test",0);
@@ -2370,44 +2782,75 @@ extern "C" {
 		debug = 1;
 		screenmode = config.getInt32("screenmode",0);
 #endif
+
+		dprintf("Server %s osdport: %d tsport %d lcdport %d\n", hostname, vnc_port, ts_port, lcd_port);
+		
 		if(gScale > 4 || gScale < 1)
 			gScale=1;
 		global_framebuffer.v_scale = gScale;
 		
-    // Start TEST of pacemaker
+		// Start TEST of pacemaker
+		
+		system("/bin/pzapit -esb");
+		//int nTest = system("/bin/pzapit -kill");
+		//int nTest = system("/bin/pzapit -p");
+		//	g_Zapit->setStandby(true);
+		//dprintf("Forcing zapit to go to standby: %d\n", nTest);
+		usleep(350000);
+		
+		
+		const char *sArgument = "bla";
+		
+		ringbuf = ringbuffer_create(RINGBUFFERSIZE);
+		
+		// ctx-Init hier bevor die Threads starten
+		MP_CTX mpCtx;
+		ctx = &mpCtx;
+		
+		ctx->pos = 0L;
+		ctx->canPause = false;
+		
+		ctx->readSize = PF_BUF_SIZE / 2;
+		
+		ctx->pidv     = 99;
+		ctx->pida     = 100;
+		ctx->ac3      = -1;
+		
+		if(pthread_create(&oLCDThread, 0, updateLCD, (void *)sArgument) != 0)
+		{
+			dprintf("Couldn't create LCD thread\n");
+		}
+		else
+		{
+			dprintf("Successfully created LCD thread\n");
+		}
+		
+		if(pthread_create(&oTSReceiverThread, 0, mp_ReceiveStream, (void *)sArgument) != 0)
+		{
+			dprintf("Couldn't create oTSReceiverThread\n");
+		}
+		else
+		{
+			dprintf("Successfully created oTSReceiverThread\n");
+		}	
+		
+		if(pthread_create(&oPlayerThread, 0, mp_playStream, (void *)sArgument) != 0)
+		{
+			dprintf("Couldn't create player thread\n");
+		}
+		else
+		{
+			dprintf("Successfully created player thread\n");
+		}	
+	 
+	 
+		
+		//g_Controld      = new CControldClient;
+		//g_Controld->registerEvent(CControldClient::EVT_MUTECHANGED, 222, NEUTRINO_UDS_NAME);
+		//g_Controld->registerEvent(CControldClient::EVT_VOLUMECHANGED, 222, NEUTRINO_UDS_NAME);
 
-    system("/bin/pzapit -esb");
-    //int nTest = system("/bin/pzapit -kill");
-    //int nTest = system("/bin/pzapit -p");
-    //	g_Zapit->setStandby(true);
-    //dprintf("Forcing zapit to go to standby: %d\n", nTest);
-    usleep(350000);
-
-
-
-    nStopPlaying = 0;
-    const char *sArgument = "bla";
-
-    
-    ringbuf = ringbuffer_create(RINGBUFFERSIZE);
-
-    if(pthread_create(&oTSReceiverThread, 0, mp_ReceiveStream, (void *)sArgument) != 0)
-    {
-      dprintf("Couldn't create oTSReceiverThread\n");
-    }
-    else
-    {
-      dprintf("Successfully created oTSReceiverThread\n");
-    }	
-
-    if(pthread_create(&oPlayerThread, 0, mp_playStream, (void *)sArgument) != 0)
-    {
-      dprintf("Couldn't create player thread\n");
-    }
-    else
-    {
-      dprintf("Successfully created player thread\n");
-    }	
+	 
+  
 // End TEST of pacemaker
 		
 		
@@ -2416,7 +2859,7 @@ extern "C" {
 			passwdFile = CONFIGDIR "/vncpasswd";
 		}
 		sched = list_new();
-		terminate=0;
+
 		requestedDepth = 16;
 		forceTruecolour = True;
 		kbdRate=4;
@@ -2425,17 +2868,18 @@ extern "C" {
 #endif
 		signal(SIGPIPE, SIG_IGN);
 
-		if(!ConnectToRFBServer(hostname, port))
+		if(!ConnectToRFBServer(hostname, vnc_port))
 		{
 			MessageBox("Cannot connect", rc_fd);
-			dprintf("Cannot connect\n");
+
 			restore_screen();
-			list_destroy(sched);
+			//list_destroy(sched);
 			if( munmap ( (void *)global_framebuffer.p_buf, global_framebuffer.smem_len ) == -1 )
 			{
 				printf("FBclose: munmap failed");
 			}
-			cleanup_stream_threads();
+			cleanup_and_exit("VNC: Cannot connect", 0);
+			//cleanup_threads();
 			cleanupFT();
 			return;
 		}
@@ -2446,12 +2890,13 @@ extern "C" {
 			MessageBox("Cannot initialize", rc_fd);
 			dprintf("Cannot initialize\n");
 			restore_screen();
-			list_destroy(sched);
+			//list_destroy(sched);
 			if( munmap ( (void *)global_framebuffer.p_buf, global_framebuffer.smem_len ) == -1 )
 			{
 				printf("FBclose: munmap failed");
 			}
-			cleanup_stream_threads();
+			cleanup_and_exit("VNC: Cannot initialize", 0);
+			//cleanup_threads();
 			cleanupFT();
 			return;
 		}
@@ -2511,11 +2956,12 @@ extern "C" {
 		}
 		
 		schedule_add(sched, 1000, FBVNC_EVENT_TICK_SECOND);
-	
 
 		sendUpdateRequest=false;
 		while(!terminate)
 		{
+
+			
 			fbvnc_event_t ev;
 
 			if(sendUpdateRequest)
@@ -2803,3 +3249,5 @@ extern "C" {
 		return;
 	}
 }
+
+

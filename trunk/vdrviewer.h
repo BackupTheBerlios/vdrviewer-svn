@@ -119,9 +119,10 @@ extern Bool SendKeyEvent(CARD32 key, Bool down);
 extern Bool SendClientCutText(char *str, int len);
 extern Bool HandleRFBServerMessage();
 
-/* fbvdr.c */
+/* vdrviewer.cpp */
 extern void ShowOsd(Bool show);
 extern void Resync();
+extern void ToggleLCD();
 
 
 #ifdef USE_X
