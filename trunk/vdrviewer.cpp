@@ -132,6 +132,7 @@ enum MP_DEVICE_STATE
 };
 
 static MP_DEVICE_STATE gDeviceState = DVB_DEVICES_UNDEF; 
+bool DevicesOpened = false;
 
 // Pacemaker's stuff Start
 /* How to call it ....
@@ -257,7 +258,6 @@ typedef struct
 	int   dvr;
 	int   dmxv;
 	int   dmxa;
-	int   dmxp;
 	int   vdec;
 	int   adec;
 
@@ -518,88 +518,6 @@ void *updateLCD(void *sArgument)
   	pthread_exit(NULL);
 }
 
-//== open/close DVB devices ==
-//============================
-static bool mp_openDVBDevices(MP_CTX *ctx)
-{
-	bool ret = false;
-	int tries = 10;
-	
-	ctx->dmxa = -1;
-	ctx->dmxv = -1;
-	ctx->dmxp = -1;
-	ctx->dvr  = -1;
-	ctx->adec = -1;
-	ctx->vdec = -1;
-
-
-	// aus irgendwelchen Gründen werden die Devices manchmal nicht rechtzeitig
-	// freigegeben und können ich nicht geöffnet werden
-	// -> So lange Versuchen bis es klappt
-	while (tries)
-	{
-		ret = true;
-		
-		if (ctx->dmxa < 0)
-		{
-			if ((ctx->dmxa = open(DMX, O_RDWR)) < 0)
-			{
-				dprintf("Device ctx->dmxa konnte nicht geoeffnet werden !!!!!\n");
-				ret = false;
-			}
-		}
-		
-		if (ctx->dmxv < 0)
-		{
-			if ((ctx->dmxv = open(DMX, O_RDWR)) < 0)
-			{
-				dprintf("Device ctx->dmxv konnte nicht geoeffnet werden !!!!!\n");
-				ret = false;
-			}		
-		}
-	
-		if (ctx->dvr < 0)
-		{
-			if ((ctx->dvr =  open(DVR, O_WRONLY)) < 0)
-			{
-				dprintf("Device ctx->dvr konnte nicht geoeffnet werden !!!!!\n");
-				ret = false;
-			}
-		}
-	
-		if (ctx->adec < 0)
-		{
-			if ((ctx->adec = open(ADEC, O_RDWR)) < 0)
-			{
-				dprintf("Device ctx->adec konnte nicht geoeffnet werden !!!!!\n");
-				ret = false;
-			}
-		}
-		
-		if (ctx->vdec < 0)
-		{
-			if ((ctx->vdec = open(VDEC, O_RDWR)) < 0)
-			{
-				dprintf("Device ctx->vdec konnte nicht geoeffnet werden !!!!!\n");
-				ret = false;
-			}
-		}
-		
-		if (ret)
-			break;
-		
-		tries--;
-		
-		char dummy[10];
-		sprintf(dummy, "DVBInit%2d", 10 - tries);
-		LCDInfo(dummy);
-		
-		sleep(2);
-    	}
-	
-	return ret;
-}
-
 static void mp_closeDVBDevices(MP_CTX *ctx)
 {
 	//-- may prevent black screen after restart ... --
@@ -609,39 +527,29 @@ static void mp_closeDVBDevices(MP_CTX *ctx)
 	
 	if(ctx->vdec > 0)
 	{
-		if (ioctl (ctx->vdec, VIDEO_STOP) < 0)
-			perror("VIDEO_STOP");
+		ioctl (ctx->vdec, VIDEO_STOP);
 		close (ctx->vdec);
-		perror("vdec");
 	}
 	if(ctx->adec > 0)
 	{
-		if (ioctl (ctx->adec, AUDIO_STOP) < 0)
-			perror("AUDIO_STOP");
+		ioctl (ctx->adec, AUDIO_STOP);
 		close (ctx->adec);
-		perror("adec");
 	}
 	if(ctx->dmxa > 0)
 	{
-		if (ioctl (ctx->dmxa, DMX_STOP) < 0)
-			perror("DMX_STOP v");
+		ioctl (ctx->dmxa, DMX_STOP);
 		close(ctx->dmxa);
-		perror("dmxa");
 	}
 	if(ctx->dmxv > 0)
 	{
-		if (ioctl (ctx->dmxv, DMX_STOP) < 0)
-			perror("DMX_STOP v");
+		ioctl (ctx->dmxv, DMX_STOP);
 		close(ctx->dmxv);
-		perror("dmxv");
 	}
 	if(ctx->dvr > 0)
 	{
 		close(ctx->dvr);
-		perror("dvr");
 	}
 
-	ctx->dmxp = -1;
 	ctx->dmxa = -1;
 	ctx->dmxv = -1;
 	ctx->dvr  = -1;
@@ -649,8 +557,41 @@ static void mp_closeDVBDevices(MP_CTX *ctx)
 	ctx->vdec = -1;
 }
 
+//== open/close DVB devices ==
+//============================
+static bool mp_openDVBDevices(MP_CTX *ctx)
+{
+	bool ret = true;
+	
+    	if (!DevicesOpened)
+	{
+		ctx->dmxa = -1;
+		ctx->dmxv = -1;
+		ctx->dvr  = -1;
+		ctx->adec = -1;
+		ctx->vdec = -1;
+		
+		dprintf("Open DVB-Devices\n");
+		
+    		if ((	    ctx->dmxa = open (DMX, O_RDWR | O_NONBLOCK)) < 0
+			|| (ctx->dmxv = open (DMX, O_RDWR | O_NONBLOCK)) < 0
+			|| (ctx->dvr =  open (DVR, O_WRONLY | O_NONBLOCK)) < 0
+			|| (ctx->adec = open (ADEC,O_RDWR | O_NONBLOCK)) < 0
+			|| (ctx->vdec = open (VDEC, O_RDWR | O_NONBLOCK)) < 0)
+		{
+			ret = false;
+			dprintf("Open DVB-Devices ERROR\n");
+			mp_closeDVBDevices(ctx);
+			usleep(500000);
+		}
+		else
+		{
+			DevicesOpened = true;
+		}
+	}
 
-
+	return ret;
+}
 
 static ssize_t mp_tcpRead(struct pollfd *pH, char *buf, size_t count, int tio)
 {
@@ -671,7 +612,7 @@ static ssize_t mp_tcpRead(struct pollfd *pH, char *buf, size_t count, int tio)
 //=======================ku
 static void mp_stopDVBDevices(MP_CTX *ctx)
 {
-  if (gDeviceState != DVB_DEVICES_STOPPED)
+  if (gDeviceState != DVB_DEVICES_STOPPED && DevicesOpened)
   {
   	gDeviceState = DVB_DEVICES_STOPPED;
   	
@@ -704,7 +645,7 @@ static void mp_stopDVBDevices(MP_CTX *ctx)
 //========================
 static void mp_startDVBDevices(MP_CTX *ctx)
 {
-	if (gDeviceState != DVB_DEVICES_RUNNING)
+	if (gDeviceState != DVB_DEVICES_RUNNING && DevicesOpened)
 	{
 		//-- start AV devices again and ... --
 		ioctl(ctx->adec, AUDIO_PLAY);             // audio
@@ -723,7 +664,7 @@ static void mp_startDVBDevices(MP_CTX *ctx)
 //=================
 static void mp_freezeAV(MP_CTX *ctx)
 {
-  if (gDeviceState == DVB_DEVICES_RUNNING)
+  if (gDeviceState == DVB_DEVICES_RUNNING && DevicesOpened)
   {
 	//-- freeze (pause) AV playback immediate --
 	ioctl(ctx->vdec, VIDEO_FREEZE);
@@ -739,7 +680,7 @@ static void mp_freezeAV(MP_CTX *ctx)
 //===================
 static void mp_unfreezeAV(MP_CTX *ctx)
 {
-  if (gDeviceState == DVB_DEVICES_RUNNING)
+  if (gDeviceState == DVB_DEVICES_RUNNING && DevicesOpened)
   {
 
 	//-- continue AV playback immediate --
@@ -849,13 +790,16 @@ int checkAC3(char* buf, int len, bool force_update)
 			ctx->ac3 = ac3;
 			last_ac3 = ac3;
 			
-			usleep(500000);
-			mp_stopDVBDevices(ctx);
-			if(ctx->ac3 == 1)
-				ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
-			else
-				ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,1UL);	// bypass off
-			
+			if (DevicesOpened)
+			{
+				usleep(500000);
+				mp_stopDVBDevices(ctx);
+				if(ctx->ac3 == 1)
+					ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
+				else
+					ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,1UL);	// bypass off
+			}
+						
 			dprintf("AC3: %d\n", ctx->ac3);
 	
 		}
@@ -893,11 +837,15 @@ void cleanup_threads()
 
         // Resume zapit
         dprintf("Waking up Zapit\n");
+        
+	g_Zapit = new CZapitClient;
+	g_Sectionsd = new CSectionsdClient;
 	g_Zapit->setStandby(false);
 	g_Sectionsd->setPauseScanning(false);
+	g_Sectionsd->setPauseSorting(false);
 	delete g_Sectionsd;
         delete g_Zapit;
-
+       
         //system("/bin/pzapit -lsb");
         usleep(150000);
 
@@ -987,7 +935,7 @@ void *mp_ReceiveStream(void *sArgument)
 			if (count > 50)
 			{
 				// This shouldn't happen
-				dprintf("Receiver: Reset da keine Daten gelesen werden!");
+				dprintf("Receiver: Reset da keine Daten gelesen werden!\n");
 				count=0;
 				ringbuffer_reset(ringbuf);
 				ctx->playstate = eBufferRefill;
@@ -1049,6 +997,8 @@ void *mp_playStream(void *sArgument)
 	
 	bool dvbreset = false, freezed = false;
 	static time_t play_begun=0;
+
+	//checkAspectRatio(ctx->vdec, true); // initial
 
 	dprintf("Starte Player-Loop\n");
 	
@@ -1114,6 +1064,8 @@ void *mp_playStream(void *sArgument)
 			}
 			
 			ctx->playstate = ePlayInit;
+			
+			continue;
 		}
 		
 		rd = ringbuffer_read(ringbuf, ctx->dvrBuf, ctx->readSize);
@@ -1171,6 +1123,9 @@ void *mp_playStream(void *sArgument)
 			
 			continue;
 		}
+
+		if (!mp_openDVBDevices(ctx))
+			continue;
 
 		if (ctx->playstate == ePlayInit)
 		{
@@ -2837,10 +2792,14 @@ extern "C" {
 		
 		// Shutdown Zapit
 		dprintf("Send Standby command to zapit\n");
+		
 		g_Zapit = new CZapitClient;
-		g_Zapit->setStandby(true);
 		g_Sectionsd = new CSectionsdClient;
+		g_Zapit->setStandby(true);
 		g_Sectionsd->setPauseScanning(true);
+		g_Sectionsd->setPauseSorting(true);
+		delete g_Sectionsd;
+        	delete g_Zapit;
 		
 		// Start TEST of pacemaker	
 		//system("/bin/pzapit -esb");
@@ -2858,32 +2817,10 @@ extern "C" {
 		ctx->pidv     = 99;
 		ctx->pida     = 100;
 		ctx->ac3      = -1;
-
-		if (mp_openDVBDevices(ctx)) 
-		{
-			dprintf("DVB-Devices erfolgreich geoeffnet\n");
-			checkAspectRatio(ctx->vdec, true);
-		}
-		else
-		{
-			dprintf("Konnte einige DVB-Devices nicht oeffnen -> Abbruch!\n");
-			LCDInfo("DVB Err  ");
-			mp_closeDVBDevices(ctx);
-			ctx = NULL;
-			g_Sectionsd->setPauseScanning(false);
-			g_Zapit->setStandby(false);
-			delete g_Sectionsd;
-			delete g_Zapit;
-			sleep(3);
-			return;
-		}
-
-		
-	
 		const char *sArgument = "bla";
-		
+
 		ringbuf = ringbuffer_create(RINGBUFFERSIZE);
-		
+
 		if(pthread_create(&oLCDThread, 0, updateLCD, (void *)sArgument) != 0)
 		{
 			dprintf("Couldn't create LCD thread\n");
@@ -2910,17 +2847,12 @@ extern "C" {
 		{
 			dprintf("Successfully created player thread\n");
 		}	
-	 
-	 
-		
+
 		//g_Controld      = new CControldClient;
 		//g_Controld->registerEvent(CControldClient::EVT_MUTECHANGED, 222, NEUTRINO_UDS_NAME);
 		//g_Controld->registerEvent(CControldClient::EVT_VOLUMECHANGED, 222, NEUTRINO_UDS_NAME);
-
-	 
   
 // End TEST of pacemaker
-		
 		
 		if(strlen(passwdString) == 0)
 		{
