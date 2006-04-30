@@ -66,10 +66,8 @@ screen_t screen, glcd_screen;
 
 
 // Controld
-//#include "../../neutrino/lib/controldclient/controldMsg.h"
-//#include "../../neutrino/lib/controldclient/controldclient.h"
-//#include "../../neutrino/src/neutrinoMessages.h"
-
+#include <controldclient/controldMsg.h>
+#include <controldclient/controldclient.h>
 
 //Sectionsd
 #include <sectionsdclient/sectionsdclient.h>
@@ -112,7 +110,7 @@ int is_ac3=-1;
 int auto_aspratio;
 size_t readsize;
 size_t iPlaceToWrite;
-//CControldClient	*g_Controld;
+CControldClient	*g_Controld;
 void fbvnc_close(void);
 Pixel ico_mouse[] = {
 ICO_WHITE,ICO_WHITE,ICO_WHITE,ICO_WHITE,
@@ -857,7 +855,7 @@ void cleanup_and_exit(char *msg, int ret)
 {
 	terminate=1;
 	
-	//delete g_Controld;
+	delete g_Controld;
 
 	fcntl(rc_fd, F_SETFL, O_NONBLOCK);
 	fcntl(lcd, F_SETFL, O_NONBLOCK);
@@ -1910,10 +1908,7 @@ dprintf("reading ms_fd\n");
 			dprintf("Input event: time: %d.%d type: %d code: %d value: %d\n",
 				(int)iev.time.tv_sec,(int)iev.time.tv_usec,iev.type,iev.code,iev.value);
 
-                        // pacemaker's and Zwer2k's code start
 
-			static bool mute = false;
-			static char volume = 255;
 			static int keypress_count = 0;
 
 			
@@ -1930,19 +1925,17 @@ dprintf("reading ms_fd\n");
 					{
 						if (iev.value == 1)
 						{
+							char volume = g_Controld->getVolume(CControld::TYPE_AVS);
 							if (iev.code == KEY_VOLUMEUP)
 							{
-								//g_Controld->setVolume(60, CControld::TYPE_LIRC);
 								volume = volume > 245 ? 255 : volume + 10;
 							}
 							else 
 							{
-								//g_Controld->setVolume(40, CControld::TYPE_LIRC);
 								volume = volume < 10 ? 0 : volume - 10;
 							}
 								
-							//g_Controld->setVolume(volume, CControld::TYPE_OST);
-							//g_Controld->setVolume(volume, CControld::TYPE_AVS);
+							g_Controld->setVolume(volume, CControld::TYPE_AVS);
 						}
 						
 					}
@@ -1950,20 +1943,8 @@ dprintf("reading ms_fd\n");
 					{
 						if (iev.value == 1)
 						{
-							if (mute)
-							{
-								//g_Controld->Mute(CControld::TYPE_OST);
-								//g_Controld->Mute(CControld::TYPE_AVS);
-								//g_Controld->Mute(CControld::TYPE_LIRC);
-								mute = false;
-							}
-							else
-							{
-								//g_Controld->UnMute(CControld::TYPE_OST);
-								//g_Controld->UnMute(CControld::TYPE_AVS);
-								//g_Controld->UnMute(CControld::TYPE_LIRC);
-								mute = true;
-							}
+							bool mute = g_Controld->getMute(CControld::TYPE_AVS);
+							g_Controld->setMute(!mute, CControld::TYPE_AVS);
 						}
 					}
   				    	else
@@ -1989,7 +1970,6 @@ dprintf("reading ms_fd\n");
 			    }
 			}
 
-                        // pacemaker's and Zwer2k's code end
 
          
          if(iev.type == EV_KEY)
@@ -2848,9 +2828,9 @@ extern "C" {
 			dprintf("Successfully created player thread\n");
 		}	
 
-		//g_Controld      = new CControldClient;
-		//g_Controld->registerEvent(CControldClient::EVT_MUTECHANGED, 222, NEUTRINO_UDS_NAME);
-		//g_Controld->registerEvent(CControldClient::EVT_VOLUMECHANGED, 222, NEUTRINO_UDS_NAME);
+		g_Controld      = new CControldClient;
+		g_Controld->registerEvent(CControldClient::EVT_MUTECHANGED, 222, CONTROLD_UDS_NAME);
+		g_Controld->registerEvent(CControldClient::EVT_VOLUMECHANGED, 222, CONTROLD_UDS_NAME);
   
 // End TEST of pacemaker
 		
