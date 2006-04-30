@@ -71,7 +71,13 @@ screen_t screen, glcd_screen;
 //#include "../../neutrino/src/neutrinoMessages.h"
 
 
+//Sectionsd
+#include <sectionsdclient/sectionsdclient.h>
+CSectionsdClient *g_Sectionsd;
 
+// Zapit
+#include <zapit/client/zapitclient.h>
+CZapitClient *g_Zapit;
 
 
 //extern "C" {
@@ -314,16 +320,211 @@ static void mp_tcpudpClose(int fd)
 }
 
 
+void put_pixel(screen_t screen,int x, int y,char col)
+{
+  switch (col&3) {
+  case LCD_PIXEL_ON:
+    screen[((y/8)*LCD_COLS)+x]|=1<<(y%8);
+    break;
+  case LCD_PIXEL_OFF:
+    screen[((y/8)*LCD_COLS)+x]&=~(1<<(y%8));
+    break;
+  case LCD_PIXEL_INV:
+    screen[((y/8)*LCD_COLS)+x]^=1<<(y%8);
+    break;
+  }
+}
+
+void draw_horiz_line(screen_t screen,int x, int y,int x2, char col)
+{
+	int count;
+	
+	for(count=x;count<=x2;count++)
+		put_pixel(screen,count,y,col);
+}
+
+void draw_vert_line(screen_t screen,int x, int y,int y2, char col)
+{
+	int count;
+	
+	for(count=y;count<=y2;count++)
+		put_pixel(screen,x,count,col);
+}
+
+void draw_rectangle(screen_t screen,int x, int y,int x2, int y2, char col)
+{
+	
+	int x_count,y_count;
+
+	if(col&FILLED)
+	{
+		for(y_count=y;y_count<=y2;y_count++)
+		for(x_count=x;x_count<=x2;x_count++)
+		put_pixel(screen,x_count,y_count,col);
+	}
+	else
+	{
+		draw_horiz_line(screen,x,y,x2,col);
+		draw_horiz_line(screen,x,y2,x2,col);
+		draw_vert_line(screen,x,y,y2,col);
+		draw_vert_line(screen,x2,y,y2,col);
+	}
+}
+
+void draw_progressbar(screen_t screen,int x, int y, int height, int len, int max_val, int val, char col)
+{
+	int screen_val;
+	
+	if(val>max_val) max_val=val;
+	screen_val=x+((len*val)/max_val);
+	draw_rectangle(screen,x,y,x+len,y+height,(!((col&3)>0))|4);
+	draw_rectangle(screen,x,y,screen_val,y+height,((col&3)>0)|(col&4));
+}
+
+void render_string(screen_t screen,int x, int y, char *string)
+{
+	int x_count,y_count,pos;
+	for(pos=0;string[pos]!=0;pos++)
+		for(y_count=y;y_count<y+8;y_count++)
+			for(x_count=x+(8*pos);x_count<x+(8*(pos+1));x_count++)
+				put_pixel(screen,x_count,y_count,(font[(string[pos]*8)+y_count-y]>>(7-(x_count-(x+(8*pos)))))&1);
+}
+
+int draw_screen(screen_t screen,int lcd)
+{
+	return write(lcd,screen,LCD_BUFFER_SIZE);
+}
+
+void LCDInfo(char debug_info[] = "", bool refresh = false)
+{
+	static unsigned int l_rsize=0, l_wsize=0;
+	static int l_lcd=0, l_ac3=0, l_screenmode=0;
+	static double l_drate=1;
+	static bool l_graph_lcd=false;
+	
+	char string[100];		
+	
+	if (refresh)
+	{
+		if (l_rsize != readsize)
+		{
+			draw_progressbar(screen,0,27,1,119,RINGBUFFERSIZE,readsize,LCD_PIXEL_ON | FILLED);
+			l_rsize = readsize;
+		}
+		
+		if (l_wsize != iPlaceToWrite)
+		{
+			draw_progressbar(screen,0,29,1,119,RINGBUFFERSIZE,iPlaceToWrite,LCD_PIXEL_ON | FILLED);
+			l_wsize = iPlaceToWrite;
+		}
+		
+		if (l_drate != datarate)
+		{
+			draw_progressbar(screen,0,21,4,119,10000,(int)datarate*1000,LCD_PIXEL_ON | FILLED);
+			sprintf(string, "R: %2.3f Mbit/s", datarate);
+			render_string(screen,0,12,string);
+			l_drate = datarate;
+		}
+	
+		
+		if (l_ac3 != is_ac3 || screenmode != l_screenmode)
+		{
+			sprintf(string, "16:9 %s DD %s", screenmode == 1 ? "on " : "off", is_ac3 == 1 ? "on " : (is_ac3 == 0 ? "off" : "?  ") );
+			render_string(screen,0,33,string);
+			l_ac3 = is_ac3;
+			l_screenmode = screenmode;
+		}
+		
+		if (sock_lcd != l_lcd || graph_lcd != l_graph_lcd)
+		{
+			sprintf(string, "GraphLCD: %s", sock_lcd > 0 ? (graph_lcd ? "yes " : "wait") : "no  ");
+			render_string(screen,0,44,string);
+			l_lcd = sock_lcd;
+			l_graph_lcd = graph_lcd;
+		}
+	}
+	
+	if (debug_info != "")
+	{
+		sprintf(string, "Info: %s", debug_info);
+		render_string(screen,0,55,string);
+	}
+		
+	if (lcd_info == true || graph_lcd == false)
+		draw_screen(screen,lcd);
+}
+
+void *updateLCD(void *sArgument)
+{
+	int lcd_mode;
+	screen_t buf;
+	
+	graph_lcd = false;
+	
+	lcd_mode=LCD_MODE_BIN;
+	if ((ioctl(lcd,LCD_IOCTL_ASC_MODE,&lcd_mode)<0) || (ioctl(lcd,LCD_IOCTL_CLEAR)<0))
+	{
+		dprintf("lcd ioctl - error setting LCD-mode/clearing LCD: %d\n",errno);
+	}
+
+	memset(screen,0,sizeof(screen));	
+	render_string(screen,22,1, "VDR-Viewer");
+	LCDInfo("Init", true);
+	
+	sock_lcd = mp_tcpOpen(hostname, lcd_port);
+	LCDInfo("Init", true); // for GraphLCD-Status
+	
+	while (!terminate && sock_lcd > 0)
+	{
+		int len = recv(sock_lcd, buf, sizeof(buf), 0);
+		if (len <= 0)
+		{
+			perror("LCD: recv");
+			sleep(1);
+		}
+		else 
+		{
+			graph_lcd = true;
+			memset(glcd_screen,0,sizeof(glcd_screen));	
+
+			for (int y=0;y<64;y++)
+			{
+				for (int x=0;x<120/8;x++)
+				{
+					for (int k=0;k<8;k++)
+					{
+						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
+							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
+						else
+							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
+					} 
+				}
+			}
+			
+			if (lcd_info == false)
+				draw_screen(glcd_screen, lcd);
+		}
+	}
+
+	/* verurchsacht evtl. segfault!
+	if (sock_lcd > 0)
+	{
+		close(sock_lcd);
+		sock_lcd = 0;
+	}
+	*/
+	
+  	dprintf("LCD: Thread beendet\n");
+  	pthread_exit(NULL);
+}
+
 //== open/close DVB devices ==
 //============================
 static bool mp_openDVBDevices(MP_CTX *ctx)
 {
-	bool ret = true;
+	bool ret = false;
+	int tries = 10;
 	
-	//-- may prevent black screen after restart ... --
-	//------------------------------------------------
-	usleep(500000);
-
 	ctx->dmxa = -1;
 	ctx->dmxv = -1;
 	ctx->dmxp = -1;
@@ -331,39 +532,70 @@ static bool mp_openDVBDevices(MP_CTX *ctx)
 	ctx->adec = -1;
 	ctx->vdec = -1;
 
-	if(	   (ctx->dmxa = open(DMX, O_RDWR | O_NONBLOCK)) < 0
-		|| (ctx->dmxv = open(DMX, O_RDWR | O_NONBLOCK)) < 0
-		|| (ctx->dvr =  open(DVR, O_WRONLY | O_NONBLOCK)) < 0
-		|| (ctx->adec = open(ADEC, O_RDWR | O_NONBLOCK)) < 0 
-		|| (ctx->vdec = open(VDEC, O_RDWR | O_NONBLOCK)) < 0)
+
+	// aus irgendwelchen Gründen werden die Devices manchmal nicht rechtzeitig
+	// freigegeben und können ich nicht geöffnet werden
+	// -> So lange Versuchen bis es klappt
+	while (tries)
 	{
-		if( ctx->dmxa < 0 )
+		ret = true;
+		
+		if (ctx->dmxa < 0)
 		{
-			dprintf("Device ctx->dmxa konnte nicht geoeffnet werden !!!!!\n");
-			ret = false;
+			if ((ctx->dmxa = open(DMX, O_RDWR)) < 0)
+			{
+				dprintf("Device ctx->dmxa konnte nicht geoeffnet werden !!!!!\n");
+				ret = false;
+			}
 		}
-		if( ctx->dmxv < 0 )
+		
+		if (ctx->dmxv < 0)
 		{
-			dprintf("Device ctx->dmxv konnte nicht geoeffnet werden !!!!!\n");
-			ret = false;
+			if ((ctx->dmxv = open(DMX, O_RDWR)) < 0)
+			{
+				dprintf("Device ctx->dmxv konnte nicht geoeffnet werden !!!!!\n");
+				ret = false;
+			}		
 		}
-		if( ctx->dvr < 0 )
+	
+		if (ctx->dvr < 0)
 		{
-			dprintf("Device ctx->dvr konnte nicht geoeffnet werden !!!!!\n");
-			ret = false;
+			if ((ctx->dvr =  open(DVR, O_WRONLY)) < 0)
+			{
+				dprintf("Device ctx->dvr konnte nicht geoeffnet werden !!!!!\n");
+				ret = false;
+			}
 		}
-		if( ctx->adec < 0 )
+	
+		if (ctx->adec < 0)
 		{
-			dprintf("Device ctx->adec konnte nicht geoeffnet werden !!!!!\n");
-			ret = false;
+			if ((ctx->adec = open(ADEC, O_RDWR)) < 0)
+			{
+				dprintf("Device ctx->adec konnte nicht geoeffnet werden !!!!!\n");
+				ret = false;
+			}
 		}
-		if( ctx->vdec < 0 )
+		
+		if (ctx->vdec < 0)
 		{
-			dprintf("Device ctx->vdec konnte nicht geoeffnet werden !!!!!\n");
-			ret = false;
+			if ((ctx->vdec = open(VDEC, O_RDWR)) < 0)
+			{
+				dprintf("Device ctx->vdec konnte nicht geoeffnet werden !!!!!\n");
+				ret = false;
+			}
 		}
-    
-	}
+		
+		if (ret)
+			break;
+		
+		tries--;
+		
+		char dummy[10];
+		sprintf(dummy, "DVBInit%2d", 10 - tries);
+		LCDInfo(dummy);
+		
+		sleep(2);
+    	}
 	
 	return ret;
 }
@@ -377,27 +609,37 @@ static void mp_closeDVBDevices(MP_CTX *ctx)
 	
 	if(ctx->vdec > 0)
 	{
-		ioctl (ctx->vdec, VIDEO_STOP);
+		if (ioctl (ctx->vdec, VIDEO_STOP) < 0)
+			perror("VIDEO_STOP");
 		close (ctx->vdec);
+		perror("vdec");
 	}
 	if(ctx->adec > 0)
 	{
-		ioctl (ctx->adec, AUDIO_STOP);
+		if (ioctl (ctx->adec, AUDIO_STOP) < 0)
+			perror("AUDIO_STOP");
 		close (ctx->adec);
+		perror("adec");
 	}
-
 	if(ctx->dmxa > 0)
 	{
-		ioctl (ctx->dmxa, DMX_STOP);
+		if (ioctl (ctx->dmxa, DMX_STOP) < 0)
+			perror("DMX_STOP v");
 		close(ctx->dmxa);
+		perror("dmxa");
 	}
 	if(ctx->dmxv > 0)
 	{
-		ioctl (ctx->dmxv, DMX_STOP);
+		if (ioctl (ctx->dmxv, DMX_STOP) < 0)
+			perror("DMX_STOP v");
 		close(ctx->dmxv);
+		perror("dmxv");
 	}
-	if(ctx->dvr > 0)	
+	if(ctx->dvr > 0)
+	{
 		close(ctx->dvr);
+		perror("dvr");
+	}
 
 	ctx->dmxp = -1;
 	ctx->dmxa = -1;
@@ -628,28 +870,35 @@ int checkAC3(char* buf, int len, bool force_update)
 
 void cleanup_threads()
 {
+	// Dadurch wird der LCD-Thread geschlossen, da er bei recv()
+	// auf eine Antwort vom Server wartet
 	if (sock_lcd > 0)
 	{
 		dprintf("closing sock_lcd\n");
         	shutdown(sock_lcd, SHUT_RD);
         	close(sock_lcd);
-		usleep(150000);
+        	sock_lcd = 0;
 	}
         
-        pthread_join (oLCDThread, NULL);
-        pthread_join (oTSReceiverThread, NULL);
-        pthread_join (oPlayerThread, NULL);
-        
-        ctx = NULL;
+        pthread_join(oLCDThread, NULL);
+        pthread_join(oTSReceiverThread, NULL);
+        pthread_join(oPlayerThread, NULL);
         
 	dprintf("All Threads closed!\n");
 	
 	usleep(150000);
 
-        // Resume zapit       
-        system("/bin/pzapit -lsb");
-        //int nTest = system("/bin/pzapit -p");
-        //int nTest = system("/bin/zapit");
+	mp_closeDVBDevices(ctx);
+	ctx = NULL;
+
+        // Resume zapit
+        dprintf("Waking up Zapit\n");
+	g_Zapit->setStandby(false);
+	g_Sectionsd->setPauseScanning(false);
+	delete g_Sectionsd;
+        delete g_Zapit;
+
+        //system("/bin/pzapit -lsb");
         usleep(150000);
 
 // Pacemaker's stuff End
@@ -684,199 +933,6 @@ void cleanup_and_exit(char *msg, int ret)
 
 
 
-void put_pixel(screen_t screen,int x, int y,char col)
-{
-  switch (col&3) {
-  case LCD_PIXEL_ON:
-    screen[((y/8)*LCD_COLS)+x]|=1<<(y%8);
-    break;
-  case LCD_PIXEL_OFF:
-    screen[((y/8)*LCD_COLS)+x]&=~(1<<(y%8));
-    break;
-  case LCD_PIXEL_INV:
-    screen[((y/8)*LCD_COLS)+x]^=1<<(y%8);
-    break;
-  }
-}
-
-void draw_horiz_line(screen_t screen,int x, int y,int x2, char col)
-{
-	int count;
-	
-	for(count=x;count<=x2;count++)
-		put_pixel(screen,count,y,col);
-}
-
-void draw_vert_line(screen_t screen,int x, int y,int y2, char col)
-{
-	int count;
-	
-	for(count=y;count<=y2;count++)
-		put_pixel(screen,x,count,col);
-}
-
-void draw_rectangle(screen_t screen,int x, int y,int x2, int y2, char col)
-{
-	
-	int x_count,y_count;
-
-	if(col&FILLED)
-	{
-		for(y_count=y;y_count<=y2;y_count++)
-		for(x_count=x;x_count<=x2;x_count++)
-		put_pixel(screen,x_count,y_count,col);
-	}
-	else
-	{
-		draw_horiz_line(screen,x,y,x2,col);
-		draw_horiz_line(screen,x,y2,x2,col);
-		draw_vert_line(screen,x,y,y2,col);
-		draw_vert_line(screen,x2,y,y2,col);
-	}
-}
-
-void draw_progressbar(screen_t screen,int x, int y, int height, int len, int max_val, int val, char col)
-{
-	int screen_val;
-	
-	if(val>max_val) max_val=val;
-	screen_val=x+((len*val)/max_val);
-	draw_rectangle(screen,x,y,x+len,y+height,(!((col&3)>0))|4);
-	draw_rectangle(screen,x,y,screen_val,y+height,((col&3)>0)|(col&4));
-}
-
-void render_string(screen_t screen,int x, int y, char *string)
-{
-	int x_count,y_count,pos;
-	for(pos=0;string[pos]!=0;pos++)
-		for(y_count=y;y_count<y+8;y_count++)
-			for(x_count=x+(8*pos);x_count<x+(8*(pos+1));x_count++)
-				put_pixel(screen,x_count,y_count,(font[(string[pos]*8)+y_count-y]>>(7-(x_count-(x+(8*pos)))))&1);
-}
-
-int draw_screen(screen_t screen,int lcd)
-{
-	return write(lcd,screen,LCD_BUFFER_SIZE);
-}
-
-void LCDInfo(char debug_info[] = "", bool refresh = false)
-{
-	static unsigned int l_rsize=0, l_wsize=0;
-	static int l_lcd=0, l_ac3=0, l_screenmode=0;
-	static double l_drate=1;
-	static bool l_graph_lcd=false;
-	
-	char string[100];		
-	
-	if (l_rsize != readsize || refresh)
-	{
-		draw_progressbar(screen,0,27,1,119,RINGBUFFERSIZE,readsize,LCD_PIXEL_ON | FILLED);
-		l_rsize = readsize;
-	}
-	
-	if (l_wsize != iPlaceToWrite || refresh)
-	{
-		draw_progressbar(screen,0,29,1,119,RINGBUFFERSIZE,iPlaceToWrite,LCD_PIXEL_ON | FILLED);
-		l_wsize = iPlaceToWrite;
-	}
-	
-	if (l_drate != datarate || refresh)
-	{
-		draw_progressbar(screen,0,21,4,119,10000,(int)datarate*1000,LCD_PIXEL_ON | FILLED);
-		sprintf(string, "R: %2.3f Mbit/s", datarate);
-		render_string(screen,0,12,string);
-		l_drate = datarate;
-	}
-
-	
-	if (l_ac3 != is_ac3 || screenmode != l_screenmode || refresh)
-	{
-		sprintf(string, "16:9 %s DD %s", screenmode == 1 ? "on " : "off", is_ac3 == 1 ? "on " : (is_ac3 == 0 ? "off" : "?  ") );
-		render_string(screen,0,33,string);
-		l_ac3 = is_ac3;
-		l_screenmode = screenmode;
-	}
-	
-	if (sock_lcd != l_lcd || graph_lcd != l_graph_lcd || refresh)
-	{
-		sprintf(string, "GraphLCD: %s", sock_lcd > 0 ? (graph_lcd ? "yes " : "wait") : "no  ");
-		render_string(screen,0,44,string);
-		l_lcd = sock_lcd;
-		l_graph_lcd = graph_lcd;
-	}
-	
-	if (debug_info != "" || refresh)
-	{
-		sprintf(string, "Info: %s", debug_info);
-		render_string(screen,0,55,string);
-	}
-		
-	if (lcd_info == true || graph_lcd == false || refresh)
-		draw_screen(screen,lcd);
-}
-
-void *updateLCD(void *sArgument)
-{
-	int lcd_mode;
-	screen_t buf;
-	
-	graph_lcd = false;
-	
-	lcd_mode=LCD_MODE_BIN;
-	if ((ioctl(lcd,LCD_IOCTL_ASC_MODE,&lcd_mode)<0) || (ioctl(lcd,LCD_IOCTL_CLEAR)<0))
-	{
-		dprintf("lcd ioctl - error setting LCD-mode/clearing LCD: %d\n",errno);
-	}
-
-	memset(screen,0,sizeof(screen));	
-	
-	render_string(screen,22,1, "VDR-Viewer");
-
-	LCDInfo("Init", true);
-	sock_lcd = mp_tcpOpen(hostname, lcd_port);
-	LCDInfo("Init", true);
-	
-	while (!terminate && sock_lcd > 0)
-	{
-		int len = recv(sock_lcd, buf, sizeof(buf), 0);
-		if (len <= 0)
-		{
-			perror("LCD: recv");
-			sleep(1);
-		}
-		else 
-		{
-			graph_lcd = true;
-			memset(glcd_screen,0,sizeof(glcd_screen));	
-
-			for (int y=0;y<64;y++)
-			{
-				for (int x=0;x<120/8;x++)
-				{
-					for (int k=0;k<8;k++)
-					{
-						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
-							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
-						else
-							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
-					} 
-				}
-			}
-			
-			if (lcd_info == false)
-				draw_screen(glcd_screen, lcd);
-		}
-	}
-
-	if (sock_lcd > 0)
-	{
-		close(sock_lcd);
-		sock_lcd = 0;
-	}
-	
-  	dprintf("LCD: Thread beendet\n");
-  	pthread_exit(NULL);
-}
 
 
 
@@ -922,7 +978,7 @@ void *mp_ReceiveStream(void *sArgument)
 		}
 		
 		if (secs > 0.3)
-			LCDInfo();
+			LCDInfo("", true);
 		
 		iPlaceToWrite = ringbuffer_write_space (ringbuf);
 
@@ -984,19 +1040,6 @@ void *mp_playStream(void *sArgument)
 	
 	struct pollfd pHandle;
 	
-	if (mp_openDVBDevices(ctx)) 
-	{
-		dprintf("DVB-Devices erfolgreich geoeffnet\n");
-		checkAspectRatio(ctx->vdec, true);
-	}
-	else
-	{
-		dprintf("Konnte einige DVB-Devices nicht oeffnen!!!!!!!!!!!!!!\n");
-		terminate = 1;
-		LCDInfo("DVB Err  ");
-		sleep(3);
-	}
-
 	//-- install poller --
 	pHandle.fd     = ctx->inFd;
 	pHandle.events = POLLIN | POLLPRI;
@@ -1167,7 +1210,10 @@ void *mp_playStream(void *sArgument)
 	    	
 	}
 
-  	mp_closeDVBDevices(ctx);
+	mp_stopDVBDevices(ctx);
+	sleep(2);
+
+  	//mp_closeDVBDevices(ctx);
 
   	dprintf("Player-Thread beendet\n");
 
@@ -2789,20 +2835,17 @@ extern "C" {
 			gScale=1;
 		global_framebuffer.v_scale = gScale;
 		
-		// Start TEST of pacemaker
+		// Shutdown Zapit
+		dprintf("Send Standby command to zapit\n");
+		g_Zapit = new CZapitClient;
+		g_Zapit->setStandby(true);
+		g_Sectionsd = new CSectionsdClient;
+		g_Sectionsd->setPauseScanning(true);
 		
-		system("/bin/pzapit -esb");
-		//int nTest = system("/bin/pzapit -kill");
-		//int nTest = system("/bin/pzapit -p");
-		//	g_Zapit->setStandby(true);
-		//dprintf("Forcing zapit to go to standby: %d\n", nTest);
-		usleep(350000);
-		
-		
-		const char *sArgument = "bla";
-		
-		ringbuf = ringbuffer_create(RINGBUFFERSIZE);
-		
+		// Start TEST of pacemaker	
+		//system("/bin/pzapit -esb");
+		//usleep(500000);
+
 		// ctx-Init hier bevor die Threads starten
 		MP_CTX mpCtx;
 		ctx = &mpCtx;
@@ -2815,6 +2858,31 @@ extern "C" {
 		ctx->pidv     = 99;
 		ctx->pida     = 100;
 		ctx->ac3      = -1;
+
+		if (mp_openDVBDevices(ctx)) 
+		{
+			dprintf("DVB-Devices erfolgreich geoeffnet\n");
+			checkAspectRatio(ctx->vdec, true);
+		}
+		else
+		{
+			dprintf("Konnte einige DVB-Devices nicht oeffnen -> Abbruch!\n");
+			LCDInfo("DVB Err  ");
+			mp_closeDVBDevices(ctx);
+			ctx = NULL;
+			g_Sectionsd->setPauseScanning(false);
+			g_Zapit->setStandby(false);
+			delete g_Sectionsd;
+			delete g_Zapit;
+			sleep(3);
+			return;
+		}
+
+		
+	
+		const char *sArgument = "bla";
+		
+		ringbuf = ringbuffer_create(RINGBUFFERSIZE);
 		
 		if(pthread_create(&oLCDThread, 0, updateLCD, (void *)sArgument) != 0)
 		{
@@ -2868,6 +2936,7 @@ extern "C" {
 #endif
 		signal(SIGPIPE, SIG_IGN);
 
+		dprintf("ConnectToRFBServer()\n");
 		if(!ConnectToRFBServer(hostname, vnc_port))
 		{
 			MessageBox("Cannot connect", rc_fd);

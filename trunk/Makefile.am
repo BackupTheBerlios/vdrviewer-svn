@@ -4,7 +4,7 @@ if BOXTYPE_DREAMBOX
 AM_CPPFLAGS = @FREETYPE_CFLAGS@ -I./rfb  -I$(top_srcdir)/include
 vdr_la_LDFLAGS = -rpath $(PLUGINDIR) -module -avoid-version @FREETYPE_LIBS@
 else
-AM_CPPFLAGS = -I./rfb @FREETYPE_CFLAGS@ @CONFIGFILE_CFLAGS@ -I$(top_srcdir)/include
+AM_CPPFLAGS = -I./rfb @FREETYPE_CFLAGS@ @CONFIGFILE_CFLAGS@ -I$(top_srcdir)/include -I../../../dvb/zapit/include -I../../neutrino/lib
 vdr_la_LDFLAGS = -rpath $(PLUGINDIR) -module -avoid-version @FREETYPE_LIBS@ @CONFIGFILE_LIBS@
 
 endif
