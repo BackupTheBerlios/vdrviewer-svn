@@ -108,8 +108,10 @@ int lcd_port;
 int ts_port;
 int is_ac3=-1;
 int auto_aspratio;
+int use_lirc;
 size_t readsize;
 size_t iPlaceToWrite;
+ringbuffer_t *ringbuf;
 CControldClient	*g_Controld;
 void fbvnc_close(void);
 Pixel ico_mouse[] = {
@@ -579,8 +581,8 @@ static bool mp_openDVBDevices(MP_CTX *ctx)
 		{
 			ret = false;
 			dprintf("Open DVB-Devices ERROR\n");
+			sleep(1);
 			mp_closeDVBDevices(ctx);
-			usleep(500000);
 		}
 		else
 		{
@@ -756,7 +758,7 @@ int checkAC3(char* buf, int len, bool force_update)
 	static int last_ac3=0;
 	static time_t last_check=0;
 	
-	if (force_update || time(NULL) <= last_check+1)
+	if (force_update || time(NULL) > last_check+1 || last_ac3 == -1)
 	{
 		for (int i = 0; i < len && ac3 == -1; i++)
 		{
@@ -783,10 +785,12 @@ int checkAC3(char* buf, int len, bool force_update)
 			 if (ac3 >= 0) break;
 		}
 		
+		last_ac3 = ac3;
+		
 	  	if (ac3 != ctx->ac3 && ac3 != -1)
 	   	{
 			ctx->ac3 = ac3;
-			last_ac3 = ac3;
+			
 			
 			if (DevicesOpened)
 			{
@@ -805,7 +809,7 @@ int checkAC3(char* buf, int len, bool force_update)
 		last_check=time(NULL);
 	}
 	
-	return last_ac3;
+	return ctx->ac3;
 }
 
 // Pacemaker's stuff End
@@ -822,9 +826,14 @@ void cleanup_threads()
         	sock_lcd = 0;
 	}
         
+        printf("Closing Threads!\n");
+        
         pthread_join(oLCDThread, NULL);
-        pthread_join(oTSReceiverThread, NULL);
-        pthread_join(oPlayerThread, NULL);
+        pthread_join(oPlayerThread, NULL); // Player first
+        pthread_join(oTSReceiverThread, NULL); 
+        
+        // Clear Ringbuffer
+	ringbuffer_free(ringbuf);
         
 	dprintf("All Threads closed!\n");
 	
@@ -832,6 +841,7 @@ void cleanup_threads()
 
 	mp_closeDVBDevices(ctx);
 	ctx = NULL;
+	usleep(500000);
 
         // Resume zapit
         dprintf("Waking up Zapit\n");
@@ -883,7 +893,7 @@ void cleanup_and_exit(char *msg, int ret)
 
 
 
-ringbuffer_t *ringbuf;
+
 
 void *mp_ReceiveStream(void *sArgument)
 {
@@ -971,8 +981,6 @@ void *mp_ReceiveStream(void *sArgument)
 	if (inFd > 0)
 		mp_tcpudpClose(inFd);
 	
-	// Clear Ringbuffer
-	ringbuffer_free(ringbuf);
 	dprintf("Receiver: Thread beendet\n");
 	pthread_exit(NULL);
 	
@@ -995,8 +1003,6 @@ void *mp_playStream(void *sArgument)
 	
 	bool dvbreset = false, freezed = false;
 	static time_t play_begun=0;
-
-	//checkAspectRatio(ctx->vdec, true); // initial
 
 	dprintf("Starte Player-Loop\n");
 	
@@ -1123,7 +1129,11 @@ void *mp_playStream(void *sArgument)
 		}
 
 		if (!mp_openDVBDevices(ctx))
+		{
+			LCDInfo("DVB ERR   ");
+			sleep(5);
 			continue;
+		}
 
 		if (ctx->playstate == ePlayInit)
 		{
@@ -1166,13 +1176,9 @@ void *mp_playStream(void *sArgument)
 	mp_stopDVBDevices(ctx);
 	sleep(2);
 
-  	//mp_closeDVBDevices(ctx);
-
   	dprintf("Player-Thread beendet\n");
 
 	pthread_exit(NULL);
-  	
-
 }
 
 void Resync()
@@ -1904,38 +1910,37 @@ dprintf("reading ms_fd\n");
 #endif
 		if(count == sizeof(struct input_event))
 		{
-
-			dprintf("Input event: time: %d.%d type: %d code: %d value: %d\n",
-				(int)iev.time.tv_sec,(int)iev.time.tv_usec,iev.type,iev.code,iev.value);
-
+			dprintf("Input event: time: %d.%d type: %d code: %d value: %d\n",(int)iev.time.tv_sec,(int)iev.time.tv_usec,iev.type,iev.code,iev.value);
 
 			static int keypress_count = 0;
-
 			
 			bool handled = cMenu::HandleMenu(rc_fd, iev, ev);
-			
+
 			dprintf("handled: %d evtype: %d\n", handled, ev->evtype);
 			if (!handled)
 			{
 			   	if (ev->evtype == FBVNC_EVENT_NULL)
 			    	{
-				if (iev.value != 2 || keypress_count > 1)
-				{
 	    				if (iev.code == KEY_VOLUMEUP || iev.code == KEY_VOLUMEDOWN )
 					{
-						if (iev.value == 1)
+						if (iev.value != 0)
 						{
 							char volume = g_Controld->getVolume(CControld::TYPE_AVS);
 							if (iev.code == KEY_VOLUMEUP)
 							{
-								volume = volume > 245 ? 255 : volume + 10;
+								volume = volume > 95 ? 100 : volume + 5;
+								if (use_lirc)
+									g_Controld->setVolume(60, CControld::TYPE_LIRC);
 							}
 							else 
 							{
-								volume = volume < 10 ? 0 : volume - 10;
+								volume = volume < 5 ? 0 : volume - 5;
+								if (use_lirc)
+									g_Controld->setVolume(40, CControld::TYPE_LIRC);
 							}
-								
-							g_Controld->setVolume(volume, CControld::TYPE_AVS);
+							
+							if (!use_lirc)
+								g_Controld->setVolume(volume, CControld::TYPE_AVS);
 						}
 						
 					}
@@ -1944,34 +1949,36 @@ dprintf("reading ms_fd\n");
 						if (iev.value == 1)
 						{
 							bool mute = g_Controld->getMute(CControld::TYPE_AVS);
-							g_Controld->setMute(!mute, CControld::TYPE_AVS);
+							if (use_lirc)
+								g_Controld->setMute(!mute, CControld::TYPE_LIRC);
+							else
+								g_Controld->setMute(!mute, CControld::TYPE_AVS);
+							
 						}
 					}
-  				    	else
-  				    	{ 
+					else if (iev.value != 2 || keypress_count > 1)
+					{
 				    		SendKeyEvent(iev.code, iev.value == 1 ? 0 : 1);
 				    		dprintf("Sende Code: %d Value: %d\n", iev.code, iev.value);
-				    	}
-				    	
-				    	if (iev.value != 2)
-  				    		keypress_count = 0;
-				}
-				else if (iev.value == 2)
-				{
-			    		dprintf("Code-Senden unterdrückt! %d\n", keypress_count);
-				    	keypress_count++;
-				}
+					    	
+					    	if (iev.value != 2)
+	  				    		keypress_count = 0;
+					}
+					else if (iev.value == 2)
+					{
+				    		dprintf("Code-Senden unterdrückt! %d\n", keypress_count);
+					    	keypress_count++;
+					}
 
-				RetEvent(FBVNC_EVENT_NULL);
-			    }
-			    else
-			    {
-				RetEvent((fbvnc_event)ev->evtype);
-			    }
+					RetEvent(FBVNC_EVENT_NULL);
+			    	}
+			    	else
+			    	{
+					RetEvent((fbvnc_event)ev->evtype);
+			    	}
 			}
 
-
-         
+        
          if(iev.type == EV_KEY)
          {
             retval=FBVNC_EVENT_NULL;
@@ -2678,6 +2685,7 @@ extern "C" {
 		char szPasswd[20];
 		char szMouse[20];
 		char szAutAspRatio[20];
+		char szUseLirc[20];
 #ifdef HAVE_DREAMBOX_HARDWARE
 		unsigned short dummy;
 		while (read(rc_fd, &dummy, 2) > 0);
@@ -2702,9 +2710,7 @@ extern "C" {
 		sprintf(szTSPort      ,"streamingport%s",szServerNr);
 		sprintf(szLCDPort     ,"lcdport%s",szServerNr);
 		sprintf(szAutAspRatio ,"autoaspectratio%s",szServerNr);
-		
-		
-		
+		sprintf(szUseLirc     ,"lirc%s",szServerNr);
 		
 #ifdef HAVE_DREAMBOX_HARDWARE
 
@@ -2753,14 +2759,15 @@ extern "C" {
 		int vnc_port=config.getInt32(szVNCPort,20001);
 		ts_port=config.getInt32(szTSPort,20002);
 		lcd_port=config.getInt32(szLCDPort,20003);
+		use_lirc=config.getInt32(szUseLirc,0);
 		gScale=config.getInt32(szScale,1);
 		auto_aspratio=config.getInt32(szAutAspRatio,0);
 		serverScaleFactor = config.getInt32(szServerScale,1);
 		rcCycleDuration = config.getInt32("rc_cycle_duration",225)*1000;
 		rcTest = config.getInt32("rc_test",0);
 		strcpy(passwdString,config.getString(szPasswd,"").substr(0,8).c_str());
-		//debug = config.getInt32("debug",0);
-		debug = 1;
+		debug = config.getInt32("debug",1);
+		//debug = 1;
 		screenmode = config.getInt32("screenmode",0);
 #endif
 
@@ -2780,6 +2787,7 @@ extern "C" {
 		g_Sectionsd->setPauseSorting(true);
 		delete g_Sectionsd;
         	delete g_Zapit;
+		sleep(1);
 		
 		// Start TEST of pacemaker	
 		//system("/bin/pzapit -esb");
