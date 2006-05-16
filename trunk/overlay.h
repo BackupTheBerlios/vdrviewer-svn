@@ -36,17 +36,7 @@ typedef struct fbvnc_overlay {
 // 100 rot
 // 130 hellgrün
 enum {FILL, GRID};
-enum {	TRANSP	= 0, 
-	WHITE	= 0xF2F2F2, 
-	GREEN	= 0x00FF00, 
-	YELLOW 	= 0xFFFF00, 
-	RED	= 0xFF0000,
-	BLUE 	= 0x0000FF,
-	ORANGE	= 0xE8A900,
-	SKIN1   = 0x001838,
-	SKIN2   = 0x002058,
-	SKIN3   = 0x3888F8
-     };
+enum {TRANSP, WHITE, GREEN, YELLOW, RED, BLUE, ORANGE, SKIN1, SKIN2, SKIN3};
 enum {LEFT, CENTER, RIGHT};
 enum {SMALL, NORMAL, BIG};
 
@@ -60,6 +50,7 @@ extern fbvnc_overlay_t *add_overlay(int x0l, int y0l, int x0p, int y0p,
 extern bool remove_overlay(fbvnc_overlay_t *ov);
 
 extern void overlays_init(void);
+
 extern void draw_overlay(fbvnc_overlay_t *ov);
 extern void draw_pixmap(Pixel *pix, int x, int y, int w, int h);
 extern void redraw_all_overlays();

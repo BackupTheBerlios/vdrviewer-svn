@@ -9,6 +9,7 @@
 extern "C" {
 #include "vdrviewer.h"
 #include "fbgl.h"
+#include "overlay.h"
 }
 
 #include "viewermenu.h"
@@ -126,9 +127,17 @@ int rcaltgrtable[] =
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, RC_LSHIFT, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00,  0x00, 'µ', 0x00, 0x00, 0x00, RC_RSHIFT, 0x00, RC_ALT, 0x20, RC_CAPSLOCK,RC_F1,RC_F2,RC_F3,RC_F4,RC_F5,
     RC_F6,RC_F7,RC_F8,RC_F9,RC_F10,RC_NUM,RC_ROLLEN,0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
     0x00, RC_STANDBY, 0x00, 0x00, 0x00, 0x00, '|'
 };
 
+
+//                     TRANSP   WHITE    GREEN    YELLOW   RED      BLUE     ORANGE   SKIN1    SKIN2   SKIN3
+unsigned short rd[] = {0x00<<8, 0xF2<<8, 0x00<<8, 0xFF<<8, 0xFF<<8, 0x00<<8, 0xE8<<8, 0x00<<8, 0x00<<8, 0x38<<8};
+unsigned short gn[] = {0x00<<8, 0xF2<<8, 0xFF<<8, 0xFF<<8, 0x00<<8, 0x00<<8, 0xA9<<8, 0x18<<8, 0x20<<8, 0x88<<8};
+unsigned short bl[] = {0x00<<8, 0xF2<<8, 0x00<<8, 0x00<<8, 0x00<<8, 0xFF<<8, 0x00<<8, 0x38<<8, 0x58<<8, 0xF8<<8};
+unsigned short tr[] = {0xFF00,  0x0000,  0x0000,  0x0000,  0x0000,  0x0000,  0x0000,  0x0000,  0x0000,  0x0000};
+struct fb_cmap colormap = {0, 10, rd, gn, bl, tr};
 
 
 //************************************************************************************************
@@ -211,15 +220,15 @@ void cMenuItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 		  m_ItemLeft + m_ItemWidth, 
 		  m_ItemTop  + ITEM_HEIGHT, 
 		  FILL, 
-		  ConvertColor(SKIN3));
+		  SKIN3);
     
 	RenderString(m_pText, 
 		     m_ItemLeft + ITEM_TEXT_LEFT, 
 		     m_ItemTop  + ITEM_TEXT_TOP, 
 		     m_ItemLeft + m_ItemWidth - ITEM_TEXT_RIGHT, 
 		     LEFT, 
-		     ConvertColor(WHITE), 
-		     ConvertColor(SKIN3));
+		     WHITE, 
+		     SKIN3);
     }
     else
     {
@@ -230,7 +239,7 @@ void cMenuItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 		      m_ItemLeft + m_ItemWidth, 
 		      m_ItemTop  + ITEM_HEIGHT, 
 		      FILL, 
-		      ConvertColor(SKIN2));
+		      SKIN2);
 	}	  
 	
 	RenderString(m_pText, 
@@ -238,8 +247,8 @@ void cMenuItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 		     m_ItemTop  + ITEM_TEXT_TOP, 
 		     m_ItemLeft + m_ItemWidth - ITEM_TEXT_RIGHT, 
 		     LEFT, 
-		     ConvertColor(WHITE), 
-		     ConvertColor(SKIN2));
+		     WHITE, 
+		     SKIN2);
     }
 }
 
@@ -354,7 +363,7 @@ void cMenuSeparatorItem::Draw(int ItemLeft , int ItemTop, int ItemWidth)
 	      m_ItemLeft + m_ItemWidth - 3, 
 	      m_ItemTop + m_ItemHeight / 2 + 1, 
 	      FILL, 
-	      ConvertColor(SKIN3));
+	      SKIN3);
 }
 
 
@@ -610,10 +619,10 @@ void cMenu::Draw()
     int MenuLeft = (p_xsize  - m_ItemWidth) / 2;
     
     
-    RenderBox(MenuLeft, MenuTop, MenuLeft+m_ItemWidth, MenuTop+MENU_HEADER_HEIGHT, FILL, ConvertColor(SKIN1));
-    RenderBox(MenuLeft, MenuTop+MENU_HEADER_HEIGHT, MenuLeft+m_ItemWidth, MenuTop+MenuHeight, FILL, ConvertColor(SKIN2));
+    RenderBox(MenuLeft, MenuTop, MenuLeft+m_ItemWidth, MenuTop+MENU_HEADER_HEIGHT, FILL, SKIN1);
+    RenderBox(MenuLeft, MenuTop+MENU_HEADER_HEIGHT, MenuLeft+m_ItemWidth, MenuTop+MenuHeight, FILL, SKIN2);
     RenderString(m_pName, MenuLeft+ITEM_TEXT_LEFT, MenuTop, m_ItemWidth-ITEM_TEXT_LEFT-ITEM_TEXT_RIGHT, 
-		 LEFT, ConvertColor(YELLOW), ConvertColor(SKIN1));
+		 LEFT, YELLOW, SKIN1);
 	
     TItemList::iterator it;	 
     int Top = MenuTop + MENU_HEADER_HEIGHT;
@@ -690,9 +699,12 @@ bool cMenu::ProcessKey(int Key)
 EMenuValue cMenu::Show(int rc_fd)
 {
     IMPORT_FRAMEBUFFER_VARS;
-    gl_fillbox(0, 0, p_xsize, p_ysize, 0);
+    
+    STORE_PALETTE(&colormap);
+    
+    gl_fillbox(0, 0, p_xsize, p_ysize, TRANSP);
     Draw();
-    ShowOsd(True);
+    //ShowOsd(True);
     int rccode;
     while( 1 )
     {
@@ -704,6 +716,8 @@ EMenuValue cMenu::Show(int rc_fd)
 	    break;
     }
     
+    gl_fillbox(0, 0, p_xsize, p_ysize, TRANSP);
+    STORE_PALETTE(NULL);
     SendFramebufferUpdateRequest(0, 0, p_xsize, p_ysize, False);
     
     return m_RetValue;
@@ -716,21 +730,23 @@ EMenuValue cMenu::Show(int rc_fd)
 void cMenu::MsgBox(int rc_fd, char* header, char* question)
 {
 
-    RenderBox(155, 178, 464, 220, FILL, ConvertColor(SKIN1));
-    RenderBox(155, 220, 464, 327, FILL, ConvertColor(SKIN2));
-    RenderBox(155, 178, 464, 327, GRID, ConvertColor(SKIN3));
-    RenderBox(155, 220, 464, 327, GRID, ConvertColor(SKIN3));
+    RenderBox(155, 178, 464, 220, FILL, SKIN1);
+    RenderBox(155, 220, 464, 327, FILL, SKIN2);
+    RenderBox(155, 178, 464, 327, GRID, SKIN3);
+    RenderBox(155, 220, 464, 327, GRID, SKIN3);
 
-    RenderString(header, 157, 213, 306, CENTER, ConvertColor(YELLOW), ConvertColor(SKIN1));
-    RenderString(question, 157, 265, 306, CENTER, ConvertColor(WHITE), ConvertColor(SKIN1));
+    RenderString(header, 157, 213, 306, CENTER, YELLOW, SKIN1);
+    RenderString(question, 157, 265, 306, CENTER, WHITE, SKIN1);
   
-    RenderBox(235, 286, 284, 310, FILL, ConvertColor(SKIN3));
-    RenderString("OK", 237, 305, 46, CENTER, ConvertColor(WHITE), ConvertColor(SKIN3));
-    RenderBox(335, 286, 384, 310, FILL, ConvertColor(SKIN3));
-    RenderString("EXIT", 337, 305, 46, CENTER, ConvertColor(WHITE), ConvertColor(SKIN3));
+    RenderBox(235, 286, 284, 310, FILL, SKIN3);
+    RenderString("OK", 237, 305, 46, CENTER, WHITE, SKIN3);
+    RenderBox(335, 286, 384, 310, FILL, SKIN3);
+    RenderString("EXIT", 337, 305, 46, CENTER, WHITE, SKIN3);
 
 //    REDRAWBOX(0, 0, 700, 450);
   
+    ShowOsd(True);
+    
     int rccode;
     while( 1 )
     {
@@ -740,6 +756,8 @@ void cMenu::MsgBox(int rc_fd, char* header, char* question)
 	    break;
 	}
     }
+    
+    ShowOsd(False);
 }
 
 //************************************************************************************************

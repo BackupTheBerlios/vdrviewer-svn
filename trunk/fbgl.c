@@ -32,23 +32,50 @@
 #define INVALID_PIXEL 0xffffffff
 #define COLORMAP_SIZE 256
 
+
+struct fb_cmap cmap;
+__u16 red[256], green[256], blue[256], transp[256];
+
+
 /*
  * CopyDataToScreen.
  */
 
-void
-CopyDataToScreen(CARD8 *buf, int x, int y, int width, int height)
+void CopyDataToScreen(CARD8 *buf, int x, int y, int width, int height)
 {
 	gl_putbox(x, y, width, height, buf);
 }
 
-void
-gl_setpalettecolor(int i, int r, int g, int b) {
-	cleanup_and_exit("palette not implemented", EXIT_ERROR);
+
+void gl_initpalettecolor(int numcolors) 
+{
+    cmap.start  = 0;
+    cmap.red    = red;
+    cmap.green  = green;
+    cmap.blue   = blue;
+    cmap.transp = transp;
+    cmap.len    = numcolors;
 }
 
-void
-gl_copybox(int xsrc, int ysrc, int w, int h, int x, int y) {
+void gl_setpalettecolor(int i, int r, int g, int b, int tr) 
+{
+    cmap.red[i]    = r;
+    cmap.green[i]  = g;
+    cmap.blue[i]   = b;
+    cmap.transp[i] = tr;
+    dprintf("SetPaletteColor r=%x g=%x b=%x t=%x\n", r, g, b, tr);
+}
+
+void gl_storepalette(struct fb_cmap *map) 
+{
+    if (map == NULL)
+	map = &cmap;
+
+    if (ioctl(global_framebuffer.framebuf_fds, FBIOPUTCMAP, map) == -1)
+	dprintf("VDRViewer <FBIOPUTCMAP failed>\n");
+}
+
+void gl_copybox(int xsrc, int ysrc, int w, int h, int x, int y) {
 	int j;
 	IMPORT_FRAMEBUFFER_VARS
 
@@ -86,8 +113,7 @@ gl_copybox(int xsrc, int ysrc, int w, int h, int x, int y) {
 	redraw_virt(x, y, w, h);
 }
 
-void
-gl_fillbox(int x, int y, int w, int h, int col) {
+void gl_fillbox(int x, int y, int w, int h, int col) {
 	int i,j;
 	IMPORT_FRAMEBUFFER_VARS
 	for (j=0; j<h; j++) {
@@ -101,8 +127,7 @@ gl_fillbox(int x, int y, int w, int h, int col) {
 //	printf("Fillbox %d\n",col);
 }
 
-void
-gl_fillboxnoredraw(int x, int y, int w, int h, int col) {
+void gl_fillboxnoredraw(int x, int y, int w, int h, int col) {
 	int i,j;
 	IMPORT_FRAMEBUFFER_VARS
 	for (j=0; j<h; j++) {
@@ -115,8 +140,7 @@ gl_fillboxnoredraw(int x, int y, int w, int h, int col) {
 //	printf("Fillboxnoredraw %d\n",col);
 }
 
-void
-gl_putbox(int x, int y, int w, int h, CARD8 *buf) {
+void gl_putbox(int x, int y, int w, int h, CARD8 *buf) {
 	int j;
 	Pixel *src, *dst;
 	IMPORT_FRAMEBUFFER_VARS
@@ -133,8 +157,7 @@ gl_putbox(int x, int y, int w, int h, CARD8 *buf) {
 //	printf("Putbox \n");
 }
 
-void
-gl_redrawbox(int x, int y, int w, int h) {
+void gl_redrawbox(int x, int y, int w, int h) {
 	redraw_virt(x, y, w, h);
 //	printf("Redwaw \n");
 }

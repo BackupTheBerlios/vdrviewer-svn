@@ -46,6 +46,7 @@ Bool addCopyRect = True;
 Bool addRRE = True;
 Bool addCoRRE = True;
 Bool addHextile = True;
+Bool addUseAlpha = True;
 
 Bool forceOwnCmap = False;
 Bool forceTruecolour = False;

@@ -8,10 +8,6 @@
 
 #include <list>
 
-extern "C" {
-#include "overlay.h"
-}
-
 
 enum EMenuValue
 {
@@ -22,6 +18,8 @@ enum EMenuValue
     eMVToggleLCD,
     eMVSettings
 };
+
+
 
 
 class cMenuItem 
@@ -107,7 +105,7 @@ private:
     TItemList::iterator m_SelectedItem;
     EMenuValue m_RetValue;
     static int GetRCCode(int rc_fd, int &rccode);
-
+    
 public:
     cMenu(const char *pName);
     virtual ~cMenu();

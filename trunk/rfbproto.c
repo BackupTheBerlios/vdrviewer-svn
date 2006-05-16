@@ -35,6 +35,9 @@
 
 #include "fbgl.h"
 
+#define rfbEncSpecialUseAlpha 0xFFFFF000        // server shall send alpha values in addition to RGB values
+
+
 static Bool HandleHextileEncoding8(int x, int y, int w, int h);
 static Bool HandleHextileEncoding16(int x, int y, int w, int h);
 static Bool HandleHextileEncoding32(int x, int y, int w, int h);
@@ -286,6 +289,7 @@ InitialiseRFBConnection(int sock)
 Bool
 SetFormatAndEncodings()
 {
+	printf("--- SetFormatAndEncodings\n");
 	rfbSetPixelFormatMsg spf;
 	char buf[sz_rfbSetEncodingsMsg + MAX_ENCODINGS * 4];
 	rfbSetEncodingsMsg *se = (rfbSetEncodingsMsg *)buf;
@@ -323,6 +327,12 @@ SetFormatAndEncodings()
 //		encs[se->nEncodings++] = Swap32IfLE(rfbEncodingCoRRE);
 	if(addRRE)
 		encs[se->nEncodings++] = Swap32IfLE(rfbEncodingRRE);
+	if(addUseAlpha)
+	{
+		encs[se->nEncodings++] = Swap32IfLE(rfbEncSpecialUseAlpha);
+		printf("--- Set: rfbEncSpecialUseAlpha\n");
+	}
+		
 
 	len = sz_rfbSetEncodingsMsg + se->nEncodings * 4;
 
@@ -478,18 +488,45 @@ HandleRFBServerMessage()
 
 				msg.scme.firstColour = Swap16IfLE(msg.scme.firstColour);
 				msg.scme.nColours = Swap16IfLE(msg.scme.nColours);
+				
+				dprintf("rfbSetColourMapEntries initpalette\n");
+				INIT_PALETTE(msg.scme.nColours);
+				
+				for (xc.transp = 0; xc.transp < 256; xc.transp++)
+				{
+				    xc.red = ((double)(0xff - xc.transp)) / ((double)0xff / (double)0x80);
+				    dprintf("col1=%x colr2=%x i=%0.3f\n", xc.red, xc.transp, ((double)0xff / (double)0x80));
+				}
 
+				dprintf("rfbSetColourMapEntries copycolors\n");
 				for(i = 0; i < msg.scme.nColours; i++)
 				{
-					if(!ReadExact(rfbsock, (char *)rgb, 6))
-						return False;
 					xc.pixel = msg.scme.firstColour + i;
-					xc.red = Swap16IfLE(rgb[0]);
-					xc.green = Swap16IfLE(rgb[1]);
-					xc.blue = Swap16IfLE(rgb[2]);
+					if(addUseAlpha)
+					{	
+					    if(!ReadExact(rfbsock, (char *)rgb, 8))
+						return False;
+					    xc.transp = ((double)(0xff - (Swap16IfLE(rgb[0]) >> 8))) / ((double)0xff / (double)0xA0);
+					    xc.red = Swap16IfLE(rgb[1]) >> 8;
+					    xc.green = Swap16IfLE(rgb[2]) >> 8;
+					    xc.blue = Swap16IfLE(rgb[3]) >> 8;
+					}
+					else
+					{
+					    if(!ReadExact(rfbsock, (char *)rgb, 6))
+						return False;
+					    xc.transp = 0;
+					    xc.red = Swap16IfLE(rgb[0]) >> 8;
+					    xc.green = Swap16IfLE(rgb[1]) >> 8;
+					    xc.blue = Swap16IfLE(rgb[2]) >> 8;
+					}
 					xc.flags = DoRed|DoGreen|DoBlue;
-					STORE_COLOUR (xc);
+					INSERT_COLOUR (xc);
 				}
+				dprintf("rfbSetColourMapEntries storecolors\n");
+				STORE_PALETTE(NULL);
+				
+				dprintf("rfbSetColourMapEntries end\n");
 
 				break;
 			}
@@ -497,7 +534,7 @@ HandleRFBServerMessage()
 		case rfbFramebufferUpdate:
 			{
 				dprintf("rfbFramebufferUpdate\n");
-				ShowOsd(True);
+				//ShowOsd(True);
 				rfbFramebufferUpdateRectHeader rect;
 				int linesToRead;
 				int bytesPerLine;
@@ -824,7 +861,7 @@ HandleRFBServerMessage()
 
 		case rfbBell:
 			BELL;
-			ShowOsd(False);
+			//ShowOsd(False);
 			break;
 
 		case rfbServerCutText:

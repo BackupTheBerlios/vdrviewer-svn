@@ -223,6 +223,8 @@ void setMoreTransparency( bool bDo )
 #define PF_JMP_MID    5555
 #define PF_JMP_END    9999
 
+
+
 pthread_t oTSReceiverThread;
 pthread_t oPlayerThread;
 pthread_t oLCDThread;
@@ -854,7 +856,7 @@ void cleanup_threads()
 	delete g_Sectionsd;
         delete g_Zapit;
        
-        //system("/bin/pzapit -lsb");
+//        system("/bin/pzapit -lsb");
         usleep(150000);
 
 // Pacemaker's stuff End
@@ -1212,7 +1214,7 @@ void get_fbinfo() {
 
 	if(ioctl(FFB, FBIOGET_VSCREENINFO, &vinf))
 		cleanup_and_exit("vscreeninfo", EXIT_SYSERROR);
-	vinf.bits_per_pixel = 16;
+	vinf.bits_per_pixel = 8*sizeof(Pixel);;
 	if(ioctl(FFB,FBIOPUT_VSCREENINFO, &vinf) == -1 )
 	{
 		cleanup_and_exit("Put variable screen settings failed", EXIT_ERROR);
@@ -1223,9 +1225,9 @@ void get_fbinfo() {
 		printf("bpp %d 8*sizeof(Pixel)=%d\n",vinf.bits_per_pixel, 8*sizeof(Pixel));
 		cleanup_and_exit("data type 'Pixel' size mismatch", EXIT_ERROR);
 	}
-	myFormat.bitsPerPixel = 8*sizeof(Pixel);
+	myFormat.bitsPerPixel = vinf.bits_per_pixel;
 	myFormat.depth = vinf.bits_per_pixel;
-	myFormat.trueColour = 1;
+	myFormat.trueColour = 0;
 	myFormat.redShift = vinf.red.offset;
 	myFormat.redMax = (1<<vinf.red.length)-1;
 	myFormat.greenShift = vinf.green.offset;
@@ -1243,7 +1245,7 @@ void get_fbinfo() {
 	/* Map fb into memory */
 	off_t offset = 0;
 	global_framebuffer.smem_len = finf.smem_len;
-	if( (global_framebuffer.p_buf=(unsigned short *)mmap((void *)0,finf.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, offset)) == (void *)-1 )
+	if( (global_framebuffer.p_buf=(Pixel*)mmap((void *)0,finf.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb_fd, offset)) == (void *)-1 )
 	{
 		cleanup_and_exit("fb mmap failed", EXIT_ERROR);
 	}
@@ -1346,7 +1348,7 @@ void fbvnc_init() {
 	
 	dprintf("Original blev = %d\n", blev);
 	
-	ShowOsd(False);
+	//ShowOsd(False);
 #endif
 
 	//open avs
@@ -2789,9 +2791,8 @@ extern "C" {
         	delete g_Zapit;
 		sleep(1);
 		
-		// Start TEST of pacemaker	
-		//system("/bin/pzapit -esb");
-		//usleep(500000);
+//		system("/bin/pzapit -esb");
+//		usleep(500000);
 
 		// ctx-Init hier bevor die Threads starten
 		MP_CTX mpCtx;

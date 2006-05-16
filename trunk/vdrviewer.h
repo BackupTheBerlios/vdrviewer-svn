@@ -73,6 +73,7 @@ extern Bool addCopyRect;
 extern Bool addRRE;
 extern Bool addCoRRE;
 extern Bool addHextile;
+extern Bool addUseAlpha;
 extern Bool forceOwnCmap;
 extern Bool forceTruecolour;
 extern int requestedDepth;
@@ -130,8 +131,12 @@ extern void ToggleLCD();
 
 extern Display *dpy;
 extern Window canvas;
-extern Colormap cmap;
+//extern Colormap cmap;
 extern GC gc;
+
+
+
+			
 
 extern Bool CreateXWindow();
 extern void ShutdownX();
@@ -154,14 +159,16 @@ extern void HandleMouseEvent (void);
 extern void CopyDataToScreen(CARD8 *buf, int x, int y, int width, int height);
 extern Bool svncKeyboardInit(void);
 
-#define STORE_COLOUR(xc) gl_setpalettecolor ((xc).pixel, (xc).red >> 10, \
-							(xc).green >> 10, (xc).blue >> 10)
+#define INIT_PALETTE(numcolors) gl_initpalettecolor (numcolors)
+#define INSERT_COLOUR(xc) gl_setpalettecolor ((xc).pixel, (xc).red << 8, (xc).green << 8, (xc).blue << 8, (xc).transp << 8)
+#define STORE_PALETTE(map) gl_storepalette(map)
 #define COPY_AREA(x1 ,y1, w, h, x2, y2) gl_copybox (x1, y1, w, h, x2, y2)
 #define FILL_RECT(x, y, w, h, col) gl_fillbox (x, y, w, h, col)
 #define FILL_RECTNOREDRAW(x, y, w, h, col) gl_fillboxnoredraw (x, y, w, h, col)
 #define REDRAWBOX(x, y, w, h) gl_redrawbox (x, y, w, h)
 #define BELL 
 #endif
+
 
 /* sockets.c */
 
@@ -174,6 +181,7 @@ extern int ConnectToTcpAddr(unsigned int host, int port);
 extern int AcceptTcpConnection(int listenSock);
 extern int StringToIPAddr(const char *str, unsigned int *addr);
 extern Bool SameMachine(int sock);
+
 
 
 /* listen.c */

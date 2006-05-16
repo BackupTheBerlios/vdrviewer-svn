@@ -1457,13 +1457,13 @@ void FBRenderCircle(int ovwidth, Pixel *dest, int sx, int sy, char type)
     switch(type)
     {
     case 'N':
-        color = ConvertColor(GREEN);
+        color = GREEN;
         break;
     case 'O':
-        color = ConvertColor(YELLOW);
+        color = YELLOW;
         break;
     case 'D':
-        color = ConvertColor(RED);
+        color = RED;
 	break;
     default:
         return;

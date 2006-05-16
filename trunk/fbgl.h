@@ -1,12 +1,14 @@
 #ifndef _FBGL_H
 #define _FBGL_H
 
+#include <linux/fb.h>
+
 #include "list.h"
 
 #ifndef __cplusplus
 typedef int bool;
 #endif
-typedef unsigned short Pixel;
+typedef unsigned char Pixel;
 
 #define MAX_SCALE 4
 
@@ -164,11 +166,14 @@ typedef struct {
 	int fd;
 } fbvnc_event_t;
 
+
 extern List *sched;
 
 extern void schedule_add(List *s, int ms_delta, int event);
 
-extern void gl_setpalettecolor(int i, int r, int g, int b);
+extern void gl_initpalettecolor(int numcolors);
+extern void gl_setpalettecolor(int i, int r, int g, int b, int tr);
+extern void gl_storepalette(struct fb_cmap *map);
 extern void gl_copybox(int x1, int y1, int w, int h, int x2, int y2);
 extern void gl_putbox(int x1, int y1, int w, int h, CARD8 *buf);
 extern void gl_fillbox(int x, int y, int w, int h, int col);
