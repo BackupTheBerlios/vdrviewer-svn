@@ -489,16 +489,8 @@ HandleRFBServerMessage()
 				msg.scme.firstColour = Swap16IfLE(msg.scme.firstColour);
 				msg.scme.nColours = Swap16IfLE(msg.scme.nColours);
 				
-				dprintf("rfbSetColourMapEntries initpalette\n");
 				INIT_PALETTE(msg.scme.nColours);
 				
-				for (xc.transp = 0; xc.transp < 256; xc.transp++)
-				{
-				    xc.red = ((double)(0xff - xc.transp)) / ((double)0xff / (double)0x80);
-				    dprintf("col1=%x colr2=%x i=%0.3f\n", xc.red, xc.transp, ((double)0xff / (double)0x80));
-				}
-
-				dprintf("rfbSetColourMapEntries copycolors\n");
 				for(i = 0; i < msg.scme.nColours; i++)
 				{
 					xc.pixel = msg.scme.firstColour + i;
@@ -523,11 +515,8 @@ HandleRFBServerMessage()
 					xc.flags = DoRed|DoGreen|DoBlue;
 					INSERT_COLOUR (xc);
 				}
-				dprintf("rfbSetColourMapEntries storecolors\n");
 				STORE_PALETTE(NULL);
 				
-				dprintf("rfbSetColourMapEntries end\n");
-
 				break;
 			}
 
