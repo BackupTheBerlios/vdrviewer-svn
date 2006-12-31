@@ -11,7 +11,7 @@ endif
 noinst_LTLIBRARIES = vdr.la
 
 vdr_la_SOURCES = args.c fbdraw.c fscale.c fbgl.c keyboard.c \
-                 list.c overlay.c rfbproto.c sockets.c vdrviewer.cpp ringbuffer.c viewermenu.cpp
+                 list.c overlay.c rfbproto.c sockets.c vdrviewer.cpp ringbuffer.c viewermenu.cpp datasocket.cpp
 
 
 vdr_la_LIBADD = rfb/librfb.a 

@@ -873,11 +873,11 @@ bool cMenu::HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev)
 	
 	// Billiger Workaround gegen das zusätzliche Auswerten der OK/Home-Keys
 	// durch VNC beim verlassen des menüs
-	if (time(NULL) - last_open <= 1 && (iev.code == KEY_HOME || iev.code == KEY_OK) )
+/*	if (time(NULL) - last_open <= 1 && (iev.code == KEY_HOME || iev.code == KEY_OK) )
 	{
 		dprintf("Menü: OK/Home-Key unterdrückt\n");
 		return true;
-	}
+	}*/
 	
 
 	

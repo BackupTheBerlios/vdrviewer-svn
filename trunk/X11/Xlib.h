@@ -428,7 +428,7 @@ typedef struct {
  */
 typedef struct {
 	unsigned long pixel;
-	unsigned short red, green, blue;
+	unsigned short transp, red, green, blue;
 	char flags;  /* do_red, do_green, do_blue */
 	char pad;
 } XColor;
