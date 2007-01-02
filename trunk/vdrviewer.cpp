@@ -846,10 +846,9 @@ void cleanup_and_exit(char *msg, int ret)
 
 void *mp_ReceiveStream(void *sArgument)
 {
-	int rd;
 	unsigned int bytes_read=0;
 	struct timeval oldtime, curtime;
-	int count=0, iPos, iPos2, rest=0;
+	int count, iPos, rest=0;
 	char  dvrBuf[PF_BUF_SIZE];
 	bool findSyncPos = false;
 	
@@ -883,7 +882,7 @@ void *mp_ReceiveStream(void *sArgument)
 		}
 
 		if (secs > 0.3)
-			LCDInfo("", true);
+		    LCDInfo("", true);
 		
 		iPlaceToWrite = ringbuffer_write_space (ringbuf);
 		
@@ -909,51 +908,57 @@ void *mp_ReceiveStream(void *sArgument)
 			continue;
 		}
 
-		count=0;
-		iPos=0;
-		
+		count = 0;
+		iPos = 0;
 		if (m_pStreamSocket != NULL)
 		{
-		    rd = (int)m_pStreamSocket->Get(&dvrBuf[rest], PF_BUF_SIZE - rest, PF_RD_TIMEOUT) + rest;    
-		    //dprintf("Read: %d\n", rd);
-
+		    int rd = (int)m_pStreamSocket->Get(&dvrBuf[rest], 188*7*20, PF_RD_TIMEOUT);
 		    if ( rd > 0)
 		    {
-			if ((ctx->playstate == eBufferRefill) /*|| (bDuplicateFrame)*/)
+			int datalen = rd + rest;
+			//dprintf("NewVal: %X %X\n", dvrBuf[rest], dvrBuf[rest+1]);
+			if (ctx->playstate == eBufferRefill)
 			{
 			    int iBytes = ringbuffer_read_space (ringbuf);
-			    if ((iBytes == -1) /*|| (bDuplicateFrame)*/)
+			    if (iBytes == 0)
 				findSyncPos = true;
 			}
 			
 			rest = 0;
-			while (iPos + 188 <= rd)
+			while (iPos < datalen)
 			{    
-			    if (((iPos + 188 == rd) || (dvrBuf[iPos + 188]==0x47)) && (!findSyncPos))
+			    if ((iPos + 188 < datalen) && (dvrBuf[iPos]==0x47) && (dvrBuf[iPos + 188]==0x47) && (!findSyncPos))
 			    {
 				ringbuffer_write(ringbuf, &dvrBuf[iPos], 188);
 				iPos += 188;
 			    }
-			    else if ((iPos + 188 > rd) && (!findSyncPos))
+			    else if ((iPos + 188 >= datalen) && (dvrBuf[iPos]==0x47) && ((dvrBuf[iPos+1]==0x40) || (dvrBuf[iPos+1]==0x00)) && (!findSyncPos))
 			    {
-				rest = rd - iPos;
-				memcpy(&dvrBuf[0], &dvrBuf[iPos], rest);
-				iPos = rd;
-				//dprintf("Rest: %d\n", rest);
+				rest = datalen - iPos;
+				if (iPos > 0)
+				{
+				    memcpy(&dvrBuf[0], &dvrBuf[iPos], rest);
+				    //dprintf("Rest: %d\n", rest);
+				}
+				iPos = datalen;
 			    }
 			    else
 			    {
+				int iOldPos = iPos;
+				dprintf("iPos: %d %X %X %X\n", iPos, dvrBuf[iPos], dvrBuf[iPos+1], dvrBuf[iPos+188]);
 				findSyncPos = true;
-				while ((iPos + 188 < rd) && !((dvrBuf[iPos]==0x47) && (dvrBuf[iPos+1]==0x40) && (dvrBuf[iPos+188]==0x47)))
+				while ((iPos + 188 < datalen) && !((dvrBuf[iPos]==0x47) && (dvrBuf[iPos+1]==0x40) && (dvrBuf[iPos+188]==0x47)))
 				{
 				    iPos++; 
 				}
 				
-				if ((iPos + 188 < rd) && (dvrBuf[iPos]==0x47) && (dvrBuf[iPos+1]==0x40) && (dvrBuf[iPos+188]==0x47))
+				if ((iPos + 188 < datalen) && (dvrBuf[iPos]==0x47) && (dvrBuf[iPos+1]==0x40) && (dvrBuf[iPos+188]==0x47))
 				{
 				    findSyncPos = false;
-				    dprintf("Read: %d iPos: %d\n", rd, iPos);
+				    dprintf("Datalen: %d iPos: %d\n", datalen, iPos);
 				}
+				//for (int i=iOldPos; i<iOldPos+200;i++)
+				//    dprintf("%d:%X, ", i, dvrBuf[i]);
 			    }
 			}
 			
@@ -961,30 +966,8 @@ void *mp_ReceiveStream(void *sArgument)
 			    ctx->playstate = ePlayInit;
 			
 			bytes_read += rd;
-		    
-		       /*
-			if (bDuplicateFrame)
-			{
-			    //dprintf("Duplicate Frame %1X %1X\n", dvrBuf[iPos], dvrBuf[iPos+1]);
-			    if ((iPos > 0) && (iPos < rd))
-				ringbuffer_write(ringbuf, &dvrBuf[0], iPos);
-			    
-			    iPos2 = iPos + 188;
-			    while ((iPos2<rd) && !((dvrBuf[iPos2]==0x47) && (dvrBuf[iPos2+1]==0x40)))
-			    {
-				iPos2+=188; 
-			    }
-			
-			    if ((iPos2 > iPos) && (dvrBuf[iPos2]==0x47) && (dvrBuf[iPos2+1]==0x40))
-			    {
-				ringbuffer_write(ringbuf, &dvrBuf[iPos], iPos2-iPos);
-				//dprintf("Duplicate Frame %d Bytes %1X %1X\n", iPos2-iPos, dvrBuf[iPos2], dvrBuf[iPos2+1]);
-			    }
-			}*/
-
-			    
 		    }
-		    else if (rd-iPos == 0)
+		    else
 		    {
 			ctx->playstate = eBufferRefill;
 			//ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen

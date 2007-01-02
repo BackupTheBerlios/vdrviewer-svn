@@ -148,13 +148,6 @@ bool cDataSocketUDP::Open()
 	return false;
     }
     
-    one = 1;
-    if (setsockopt(m_pHandle.fd, SOL_SOCKET,  SO_BROADCAST, (const void*) &one, sizeof(one)) == -1) 
-    {
-	printf("Error setting socket option SO_BROADCAST: sockfd =%d , %s\n", m_pHandle.fd, strerror(errno));
-	return false;	
-    } 
-    
     res=bind(m_pHandle.fd,(sockaddr*)&ads,sizeof ads);
     if (res<0) 
     {
