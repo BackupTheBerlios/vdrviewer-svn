@@ -179,8 +179,8 @@ ssize_t cDataSocketUDP::Get(char *buf, size_t count, int tio)
 {
     ssize_t n, nleft = count;
 
-    while( (nleft>0) && (poll(&m_pHandle, 1, tio) > 0) && (m_pHandle.events & m_pHandle.revents) && !m_Terminate )
-    {
+//    while( (nleft>0) && (poll(&m_pHandle, 1, tio) > 0) && (m_pHandle.events & m_pHandle.revents) && !m_Terminate )
+//    {
         n = recvfrom(m_pHandle.fd, buf, nleft, 0, NULL, NULL);
         if (n<0) 
         {
@@ -189,7 +189,7 @@ ssize_t cDataSocketUDP::Get(char *buf, size_t count, int tio)
         }
         nleft -= n;
         buf   += n;
-    }
+//    }
 
     return(count-nleft);
 }

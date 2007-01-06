@@ -142,6 +142,8 @@ setMoreTransparency( false );
 #endif
 */
 
+
+
 #ifndef HAVE_DREAMBOX_HARDWARE
 static int iLastTransparency = -1;
 static struct timeval tvLastTrancparencChange;
@@ -210,11 +212,13 @@ void setMoreTransparency( bool bDo )
 #define DVR  ADAP "/dvr0"
 
 
-#define PF_BUF_SIZE   (348*188)
+#define TS_PACKET_SIZE 188
+#define PF_BUF_SIZE   (348 * TS_PACKET_SIZE)
 #define PF_DMX_SIZE   (PF_BUF_SIZE + PF_BUF_SIZE/2)
 #define RINGBUFFERSIZE PF_BUF_SIZE*50
+#define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
 // original timeout: #define PF_RD_TIMEOUT 3000
-#define PF_RD_TIMEOUT 500
+#define PF_RD_TIMEOUT 5000
 #define PF_EMPTY      0
 #define PF_READY      1
 #define PF_LST_ITEMS  30
@@ -242,6 +246,14 @@ typedef struct
 	int                apid;
 	long long          zapid;
 } MP_LST_ITEM;
+
+struct TSData
+{
+    char packNr;
+    char packsCount;
+    char tsHeaderCRC;
+    char data[UDP_PACKET_SIZE];
+};
 
 enum e_playstate {eBufferRefill=0,eBufferRefillAll,ePlayInit,ePlay,ePause};
 
@@ -393,7 +405,7 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 			render_string(screen,0,12,string);
 			l_drate = datarate;
 			bufffill = (readsize * 100) / (RINGBUFFERSIZE);
-			dprintf("Transferrate: %2.3f Mbit/s Bufferfüllstand: %2.1f\%\n", datarate, bufffill);
+			dprintf("Transferrate: %2.3f Mbit/s Bufferfüllstand: %2.1f%%\n", datarate, bufffill);
 		}
 	
 		
@@ -420,8 +432,8 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 		render_string(screen,0,55,string);
 	}
 		
-	if (lcd_info == true || graph_lcd == false)
-		draw_screen(screen,lcd);
+//	if (lcd_info == true || graph_lcd == false)
+//		draw_screen(screen,lcd);
 }
 
 void *updateLCD(void *sArgument)
@@ -848,10 +860,11 @@ void *mp_ReceiveStream(void *sArgument)
 {
 	unsigned int bytes_read=0;
 	struct timeval oldtime, curtime;
-	int count, iPos, rest=0;
-	char  dvrBuf[PF_BUF_SIZE];
-	bool findSyncPos = false;
-	
+	int count = 0;
+	char oldPackNr = 255;
+	TSData *tsData;
+	char  dvrBuf[(188*7+3)*20];
+	int noDataCount = 0;
 	
 	dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
 	
@@ -886,11 +899,6 @@ void *mp_ReceiveStream(void *sArgument)
 		
 		iPlaceToWrite = ringbuffer_write_space (ringbuf);
 		
-		if (((bDuplicateFrame) && (PF_BUF_SIZE * 2 > iPlaceToWrite)) || (ctx->playstate == eBufferRefill))
-		{
-		    bDuplicateFrame = false;
-		}
-
 		if ( PF_BUF_SIZE > iPlaceToWrite )
 		{
 			if (count > 50)
@@ -909,71 +917,71 @@ void *mp_ReceiveStream(void *sArgument)
 		}
 
 		count = 0;
-		iPos = 0;
 		if (m_pStreamSocket != NULL)
 		{
-		    int rd = (int)m_pStreamSocket->Get(&dvrBuf[rest], 188*7*20, PF_RD_TIMEOUT);
+		    int rd = (int)m_pStreamSocket->Get(dvrBuf, (188*7+3)*20, PF_RD_TIMEOUT);
 		    if ( rd > 0)
 		    {
-			int datalen = rd + rest;
-			//dprintf("NewVal: %X %X\n", dvrBuf[rest], dvrBuf[rest+1]);
-			if (ctx->playstate == eBufferRefill)
+			if (rd != (188*7+3))
+			    dprintf("Receiver: zu wenig Daten: soll: %d ist: %d\n", (188*7+3), rd);
+			int done = 0;
+			while (done < rd)
 			{
-			    int iBytes = ringbuffer_read_space (ringbuf);
-			    if (iBytes == 0)
-				findSyncPos = true;
-			}
-			
-			rest = 0;
-			while (iPos < datalen)
-			{    
-			    if ((iPos + 188 < datalen) && (dvrBuf[iPos]==0x47) && (dvrBuf[iPos + 188]==0x47) && (!findSyncPos))
+	/*		    if (done + 2 > rd)
 			    {
-				ringbuffer_write(ringbuf, &dvrBuf[iPos], 188);
-				iPos += 188;
+				dprintf("Receiver: Dateninhalt ungültig: %d\n", done);
+				done = rd;
+				continue;
+			    }*/
+			    tsData = (TSData*)&dvrBuf[done];
+	/*		    if ((tsData->packsCount > 7) || (done + tsData->packsCount*TS_PACKET_SIZE + 3 > rd))
+			    {
+				dprintf("Receiver: Packetzahl zu hoch: %d\n", tsData->packsCount);
+				done = rd;
+				continue;
+			    }*/
+			    char crc = 0;
+			    for (int i=0; i<tsData->packsCount;i++)
+			    {
+				char *data = &(tsData->data[i * TS_PACKET_SIZE]);
+				for (int i = 0; i < 4; i++)	
+				    crc += (char)*(data + i);
 			    }
-			    else if ((iPos + 188 >= datalen) && (dvrBuf[iPos]==0x47) && ((dvrBuf[iPos+1]==0x40) || (dvrBuf[iPos+1]==0x00)) && (!findSyncPos))
+			    
+			    if (crc == tsData->tsHeaderCRC)
 			    {
-				rest = datalen - iPos;
-				if (iPos > 0)
-				{
-				    memcpy(&dvrBuf[0], &dvrBuf[iPos], rest);
-				    //dprintf("Rest: %d\n", rest);
-				}
-				iPos = datalen;
+				ringbuffer_write(ringbuf, tsData->data, tsData->packsCount*TS_PACKET_SIZE);
 			    }
 			    else
 			    {
-				int iOldPos = iPos;
-				dprintf("iPos: %d %X %X %X\n", iPos, dvrBuf[iPos], dvrBuf[iPos+1], dvrBuf[iPos+188]);
-				findSyncPos = true;
-				while ((iPos + 188 < datalen) && !((dvrBuf[iPos]==0x47) && (dvrBuf[iPos+1]==0x40) && (dvrBuf[iPos+188]==0x47)))
-				{
-				    iPos++; 
-				}
-				
-				if ((iPos + 188 < datalen) && (dvrBuf[iPos]==0x47) && (dvrBuf[iPos+1]==0x40) && (dvrBuf[iPos+188]==0x47))
-				{
-				    findSyncPos = false;
-				    dprintf("Datalen: %d iPos: %d\n", datalen, iPos);
-				}
-				//for (int i=iOldPos; i<iOldPos+200;i++)
-				//    dprintf("%d:%X, ", i, dvrBuf[i]);
+				dprintf("Receiver: Daten-CRC ungültig. PckCnt:%d, PckNr:%d, CRC:%d %d, PckNr%d\n", 
+				    tsData->packsCount, done, crc, tsData->tsHeaderCRC, tsData->packNr);
 			    }
+			    
+			    if (tsData->packNr != ((oldPackNr < 255) ? oldPackNr+1 : 0))
+				dprintf("Receiver: Packet fehlt: lastNt:%d  aktNr:%d\n", oldPackNr, tsData->packNr);
+			    oldPackNr = tsData->packNr;
+			    done += tsData->packsCount*TS_PACKET_SIZE + 3;
 			}
 			
 			if (ctx->playstate == ePause)
 			    ctx->playstate = ePlayInit;
 			
 			bytes_read += rd;
+			noDataCount = 0;
 		    }
 		    else
 		    {
-			ctx->playstate = eBufferRefill;
-			//ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen
-			ringbuffer_reset(ringbuf);
-			dprintf("Receiver: Reset Buffer!!!\n");
-			LCDInfo("Reset     ");
+			usleep(1000);
+			noDataCount ++;
+			if (noDataCount > 1000)
+			{
+			    ctx->playstate = eBufferRefill;
+			    //ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen
+			    ringbuffer_reset(ringbuf);
+			    dprintf("Receiver: Reset Buffer!!!\n");
+			    LCDInfo("Reset     ");
+			}
 		    }
 		    
 		}
@@ -1077,27 +1085,13 @@ void *mp_playStream(void *sArgument)
 			continue;
 		} 
 		else
-		{/*
-		    if ((readsize < (int)(RINGBUFFERSIZE / 2)) && (!bDuplicateFrame) && (ctx->playstate == ePlay))
-		    {
-			bDuplicateFrame = true;
-			dprintf("start duplicate frames\n");
-			mp_freezeAV(ctx);
-		    }
-		    
-		    if ((readsize > (int)(RINGBUFFERSIZE / 4 * 3)) && (bDuplicateFrame) && (ctx->playstate == ePlay))
-		    {
-			bDuplicateFrame = false;
-			dprintf("stop duplicate frames\n");
-			mp_unfreezeAV(ctx);
-		    }*/
-		    /*
-		    if (readsize < (int)(RINGBUFFERSIZE / 2) && (ctx->playstate == ePlay))
+		{
+		    /*if (readsize < (int)(RINGBUFFERSIZE / 2) && (ctx->playstate == ePlay))
 		    {
 			dprintf("duplicate frames\n");
 			ioctl (ctx->adec, AUDIO_PAUSE);
 			usleep(200000);
-			ioctl (ctx->adec, AUDIO_PLAY);
+			ioctl (ctx->vdec, VIDEO_PLAY);
 		    }*/
 		}
 
