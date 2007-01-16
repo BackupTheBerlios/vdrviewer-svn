@@ -25,6 +25,8 @@
 #include <sys/mman.h>
 #include "ringbuffer.h"
 
+ringbuffer_t* bufflock[5] = {0, 0, 0, 0, 0};
+
 /* Create a new ringbuffer to hold at least `sz' bytes of data. The
    actual buffer size is rounded up to the next power of two.  */
 
@@ -48,6 +50,57 @@ ringbuffer_create (int sz)
 
   return rb;
 }
+
+void ringbuffer_lock (ringbuffer_t * rb)
+{
+   int lockpos;
+   int newpos;
+   int i;
+  
+   do
+   {
+      newpos = -1;
+      lockpos = -1;
+      for (i=0; (i<5) && (lockpos == -1); i++)
+      {
+         if (bufflock[i] == rb)
+            lockpos = i;
+         if ((bufflock[i] == 0) && (newpos == -1))
+            newpos = i;
+      }
+      if (lockpos != -1)
+         usleep(10000);
+    } while (lockpos != -1);
+    
+    if ((newpos >= 0) && (newpos < 5))
+      bufflock[newpos] = rb;
+    else
+      dprintf("[ffnetdev] can not lock Ringbuffer");
+}
+
+void ringbuffer_unlock (ringbuffer_t * rb)
+{
+   int i;
+   
+   for (i=0; i<5; i++)
+   {
+      if (bufflock[i] == rb)
+         bufflock[i] = 0;
+   }
+}
+
+/*bool ringbuffer_locked (ringbuffer_t * rb)
+{
+   int i;
+   
+   for (i=0; i<5; i++)
+   {
+      if (bufflock[i] == rb)
+         return true;
+   }
+   
+   return false;
+}*/
 
 /* Free all data associated with the ringbuffer `rb'. */
 
@@ -164,13 +217,53 @@ ringbuffer_remove_bad_frame(ringbuffer_t * rb)
    `dest'.  Returns the actual number of bytes copied. */
 
 inline size_t
+ringbuffer_get (ringbuffer_t * rb, char *dest, size_t cnt)
+{
+  size_t free_cnt;
+  size_t cnt2;
+  size_t to_read;
+  size_t n1, n2;
+  size_t tmp_read_ptr = rb->read_ptr;
+  
+  if ((free_cnt = ringbuffer_read_space (rb)) == 0) {
+    return 0;
+  }
+
+  to_read = cnt > free_cnt ? free_cnt : cnt;
+
+  cnt2 = rb->read_ptr + to_read;
+
+  if (cnt2 > rb->size) {
+    n1 = rb->size - rb->read_ptr;
+    n2 = cnt2 & rb->size_mask;
+  } else {
+    n1 = to_read;
+    n2 = 0;
+  }
+
+  memcpy (dest, &(rb->buf[rb->read_ptr]), n1);
+
+  if (n2) {
+    tmp_read_ptr += n1;
+    tmp_read_ptr &= rb->size_mask;
+    memcpy (dest + n1, &(rb->buf[tmp_read_ptr]), n2);
+  }
+
+  return to_read;
+}
+
+
+/* The copying data reader.  Copy at most `cnt' bytes from `rb' to
+   `dest'.  Returns the actual number of bytes copied. */
+
+inline size_t
 ringbuffer_read (ringbuffer_t * rb, char *dest, size_t cnt)
 {
   size_t free_cnt;
   size_t cnt2;
   size_t to_read;
   size_t n1, n2;
-
+  
   if ((free_cnt = ringbuffer_read_space (rb)) == 0) {
     return 0;
   }
@@ -210,7 +303,7 @@ ringbuffer_write (ringbuffer_t * rb, char *src, size_t cnt)
   size_t cnt2;
   size_t to_write;
   size_t n1, n2;
-
+  
   if ((free_cnt = ringbuffer_write_space (rb)) == 0) {
     return 0;
   }

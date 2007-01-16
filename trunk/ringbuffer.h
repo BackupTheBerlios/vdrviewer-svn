@@ -24,6 +24,10 @@ ringbuffer_t ;
 ringbuffer_t *ringbuffer_create(int sz);
 void ringbuffer_free(ringbuffer_t *rb);
 
+void ringbuffer_lock (ringbuffer_t * rb);
+void ringbuffer_unlock (ringbuffer_t * rb);
+//bool ringbuffer_locked (ringbuffer_t * rb);
+
 int ringbuffer_mlock(ringbuffer_t *rb);
 void ringbuffer_reset(ringbuffer_t *rb);
 
@@ -35,6 +39,7 @@ int ringbuffer_remove_bad_frame(ringbuffer_t *rb);
 size_t ringbuffer_write_space(ringbuffer_t *rb);
 size_t ringbuffer_read_space(ringbuffer_t *rb);
 
+size_t ringbuffer_get(ringbuffer_t *rb, char *dest, size_t cnt);
 size_t ringbuffer_read(ringbuffer_t *rb, char *dest, size_t cnt);
 size_t ringbuffer_write(ringbuffer_t *rb, char *src, size_t cnt);
 

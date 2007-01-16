@@ -111,8 +111,8 @@ int auto_aspratio;
 int use_lirc;
 size_t readsize;
 size_t iPlaceToWrite;
-bool bDuplicateFrame = false;
-ringbuffer_t *ringbuf;
+ringbuffer_t *ringbuf_in;
+ringbuffer_t *ringbuf_out;
 CControldClient	*g_Controld;
 void fbvnc_close(void);
 Pixel ico_mouse[] = {
@@ -215,10 +215,11 @@ void setMoreTransparency( bool bDo )
 #define TS_PACKET_SIZE 188
 #define PF_BUF_SIZE   (348 * TS_PACKET_SIZE)
 #define PF_DMX_SIZE   (PF_BUF_SIZE + PF_BUF_SIZE/2)
-#define RINGBUFFERSIZE PF_BUF_SIZE*50
+#define RINGBUFFERSIZE (PF_BUF_SIZE*50)
 #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
+#define IPACKS		2048
 // original timeout: #define PF_RD_TIMEOUT 3000
-#define PF_RD_TIMEOUT 5000
+#define PF_RD_TIMEOUT 500
 #define PF_EMPTY      0
 #define PF_READY      1
 #define PF_LST_ITEMS  30
@@ -231,6 +232,7 @@ void setMoreTransparency( bool bDo )
 
 
 pthread_t oTSReceiverThread;
+pthread_t oTSRemuxThread;
 pthread_t oPlayerThread;
 pthread_t oLCDThread;
 
@@ -246,6 +248,8 @@ typedef struct
 	int                apid;
 	long long          zapid;
 } MP_LST_ITEM;
+
+typedef unsigned char uchar;
 
 struct TSData
 {
@@ -380,7 +384,6 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 	static int l_ac3=0, l_screenmode=0;
 	static double l_drate=1;
 	static bool l_lcd = false, l_graph_lcd=false;
-	double bufffill;
 	
 	char string[100];		
 	
@@ -388,13 +391,13 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 	{
 		if (l_rsize != readsize)
 		{
-			draw_progressbar(screen,0,27,1,119,RINGBUFFERSIZE,readsize,LCD_PIXEL_ON | FILLED);
+			draw_progressbar(screen,0,27,1,119,ringbuf_out->size,readsize,LCD_PIXEL_ON | FILLED);
 			l_rsize = readsize;
 		}
 		
 		if (l_wsize != iPlaceToWrite)
 		{
-			draw_progressbar(screen,0,29,1,119,RINGBUFFERSIZE,iPlaceToWrite,LCD_PIXEL_ON | FILLED);
+			draw_progressbar(screen,0,29,1,119,ringbuf_out->size,iPlaceToWrite,LCD_PIXEL_ON | FILLED);
 			l_wsize = iPlaceToWrite;
 		}
 		
@@ -403,11 +406,8 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 			draw_progressbar(screen,0,21,4,119,10000,(int)datarate*1000,LCD_PIXEL_ON | FILLED);
 			sprintf(string, "R: %2.3f Mbit/s", datarate);
 			render_string(screen,0,12,string);
-			l_drate = datarate;
-			bufffill = (readsize * 100) / (RINGBUFFERSIZE);
-			dprintf("Transferrate: %2.3f Mbit/s Bufferfüllstand: %2.1f%%\n", datarate, bufffill);
+			l_drate = datarate;	
 		}
-	
 		
 		if (l_ac3 != is_ac3 || screenmode != l_screenmode)
 		{
@@ -432,8 +432,8 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 		render_string(screen,0,55,string);
 	}
 		
-//	if (lcd_info == true || graph_lcd == false)
-//		draw_screen(screen,lcd);
+	if (lcd_info == true || graph_lcd == false)
+	    draw_screen(screen,lcd);
 }
 
 void *updateLCD(void *sArgument)
@@ -538,7 +538,7 @@ static bool mp_openDVBDevices(MP_CTX *ctx)
 {
 	bool ret = true;
 	
-    	if (!DevicesOpened)
+   if (!DevicesOpened)
 	{
 		ctx->dmxa = -1;
 		ctx->dmxv = -1;
@@ -800,9 +800,11 @@ void cleanup_threads()
         printf("Closing Threads!\n");
         pthread_join(oLCDThread, NULL);
         pthread_join(oPlayerThread, NULL); // Player first
+        pthread_join(oTSRemuxThread, NULL); 
         pthread_join(oTSReceiverThread, NULL); 
         // Clear Ringbuffer
-	ringbuffer_free(ringbuf);
+   ringbuffer_free(ringbuf_out);
+	ringbuffer_free(ringbuf_in);
 	dprintf("All Threads closed!\n");
 	
 	usleep(150000);
@@ -858,143 +860,254 @@ void cleanup_and_exit(char *msg, int ret)
 
 void *mp_ReceiveStream(void *sArgument)
 {
-	unsigned int bytes_read=0;
-	struct timeval oldtime, curtime;
-	int count = 0;
-	char oldPackNr = 255;
-	TSData *tsData;
-	char  dvrBuf[(188*7+3)*20];
-	int noDataCount = 0;
-	
-	dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
-	
-	m_pStreamSocket = new cDataSocketUDP(hostname, ts_port);
-	
-	if ( !m_pStreamSocket->Open() )
-	{
-		dprintf("Receiver: Cannot Connect! Exiting!\n");
-		terminate = 1;
-	}
-	else 
-	{
-		dprintf("Receicer: Connected\n");
-	}
+   unsigned int bytes_read=0;
+   struct timeval oldtime, curtime;
+   int count = 0;
+   char  dvrBuf[PF_BUF_SIZE];
+   int noDataCount = 0;
+   int iInSpace, iOutSpace; 
+   
+   dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
+   
+   m_pStreamSocket = new cDataSocketTCP(hostname, ts_port);
+   
+   if ( !m_pStreamSocket->Open() )
+   {
+      dprintf("Receiver: Cannot Connect! Exiting!\n");
+      terminate = 1;
+   }
+   else 
+   {
+      dprintf("Receicer: Connected\n");
+   }
+   
+   gettimeofday(&oldtime, NULL);
+   
+   while( terminate == 0 )
+   {
+      gettimeofday(&curtime, NULL);
+      double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
+      if (secs > 3)
+      {
+         datarate = bytes_read / secs * 8 / 1024 / 1024;
+         iInSpace = ringbuffer_read_space(ringbuf_in);
+         iOutSpace = ringbuffer_read_space(ringbuf_out);
+         dprintf("Info: Rate %2.4f MBits/s, IN-Buffer fill %d %% OUT-Buffer fill %d %%\n", datarate, (int)(iInSpace*100/ringbuf_in->size), (int)(iOutSpace*100/ringbuf_out->size));
+         oldtime = curtime;
+         bytes_read = 0;
+         LCDInfo("", true);
+      }
+  
+      iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
+      if ( PF_BUF_SIZE > iPlaceToWrite )
+      {
+         if (count > 100)
+         {
+            // This shouldn't happen
+            dprintf("Receiver: Reset da keine Daten gelesen werden!\n");
+            count=0;
+            ringbuffer_reset(ringbuf_in);
+            ctx->playstate = eBufferRefill;
+            LCDInfo("Recv. Err ");
+         }
+      
+         usleep(10000);
+         count++;
+         continue;
+      }
+   
+      count = 0;
+      if (m_pStreamSocket != NULL)
+      {
+         int rd = (int)m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);
+         if ( rd > 0)
+         {
+            ringbuffer_write(ringbuf_in, dvrBuf, rd);
+            
+            if (ctx->playstate == ePause)
+               ctx->playstate = ePlayInit;
+            
+            bytes_read += rd;
+            noDataCount = 0;
+         }
+         else
+         {
+            noDataCount ++;
+            if (noDataCount > 20)
+            {
+               ctx->playstate = eBufferRefill;
+               //ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen
+               ringbuffer_reset(ringbuf_in);
+               ringbuffer_reset(ringbuf_out);
+               dprintf("Receiver: Reset Buffer!!!\n");
+               LCDInfo("Reset     ");
+            }
+            usleep(10000);
+         }
+      }
+   }
+   
+   if (m_pStreamSocket != NULL)
+   {
+      m_pStreamSocket->Close();
+      delete m_pStreamSocket;
+      m_pStreamSocket = NULL;
+   }
+   
+   dprintf("Receiver: Thread beendet\n");
+   pthread_exit(NULL);
+}
 
-	gettimeofday(&oldtime, NULL);
 
+void *mp_RemuxStream(void *sArgument)
+{
+   size_t rd;
+   char pesData[IPACKS];
+   char ts[PF_BUF_SIZE];
+   char temp[3];
+	uchar acc=0;    // continutiy counter for audio packets
+	uchar vcc=0;    // continutiy counter for video packets
+	uchar *cc;      // either cc=&vcc; or cc=&acc;
+	unsigned short pid=0;
+	int pesPacketLen;
+	int tsPacketLen;
+   int iInSpace, iOutPlace, iOutSpace, inBuffFill, outBuffFill;
+	
+	dprintf("RemuxThread gestartet, Server: %s\n", hostname);
+	
 	while( terminate == 0 )
 	{
-               	gettimeofday(&curtime, NULL);
-		double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
-               	if (secs > 3)
-               	{
-               		datarate = bytes_read / secs * 8 / 1024 / 1024;
-//			dprintf("Info: Rate %2.4f MBits/s\n", datarate);
-			oldtime = curtime;
-			bytes_read = 0;
-		}
+	   if (1)
+      {
+         iInSpace = ringbuffer_read_space(ringbuf_in);
+         iOutSpace = ringbuffer_read_space(ringbuf_out);
+         inBuffFill = iInSpace * 100 / ringbuf_in->size;
+         outBuffFill = iOutSpace * 100 / ringbuf_out->size;
+         
+         if ((inBuffFill < 10) && (outBuffFill > 70))
+         {
+            usleep(600000);
+            continue;
+         }
+         
+   		rd = ringbuffer_get(ringbuf_in, pesData, 6);
+   		if (rd < 6)
+   		{  
+   		    usleep(600000);
+   		    continue;
+   		}
+   		  		
+   		if ( (pesData[0]!=0x00) || (pesData[1]!=0x00) || (pesData[2]!=0x01) ) 
+   		{
+   		    int deleted = 0;
+   		    do
+   		    {
+   		       ringbuffer_read(ringbuf_in, pesData, 1); // remove 1 Byte
+   		       rd = ringbuffer_get(ringbuf_in, pesData, 3);
+   		       deleted ++;
+   		    }
+   		    while ((rd == 3) && ((pesData[0]!=0x00) || (pesData[1]!=0x00) || (pesData[2]!=0x01)));
+   		    dprintf("No valid PES signature found. %d Bytes deleted.\n", deleted);
+   		    continue;
+   		}
+   		
+         if ( (pesData[3]>=0xC0) && (pesData[3]<=0xDF) || pesData[3] == 0xBD ) 
+   		{
+   		    pid=ctx->pida;
+   		    cc=&acc;
+   		} 
+   		else 
+   		{
+            if ( (pesData[3]>=0xE0) && (pesData[3]<=0xEF) ) 
+            {
+               pid=ctx->pidv;
+               cc=&vcc;
+            } 
+            else 
+            {
+               dprintf("Unknown stream id: neither video nor audio type.\n");
+               // throw away whole PES packet
+               ringbuffer_read(ringbuf_in, pesData, 1); // remove 1 Byte
+               continue;
+            }
+   		}
+   		
+   		pesPacketLen = ((pesData[4]<<8) | pesData[5]) + 6;
+   		tsPacketLen = ((int)pesPacketLen/184) * 188  + ((pesPacketLen % 184 > 0) ? 188 : 0); 
+   		iInSpace = ringbuffer_read_space(ringbuf_in);
+         iOutPlace = ringbuffer_write_space (ringbuf_out);
+   		if ((iInSpace < pesPacketLen + 3) || (iOutPlace < tsPacketLen))
+   		{
+   		    usleep(600000);
+   		    continue;
+   		}  
 
-		if (secs > 0.3)
-		    LCDInfo("", true);
-		
-		iPlaceToWrite = ringbuffer_write_space (ringbuf);
-		
-		if ( PF_BUF_SIZE > iPlaceToWrite )
-		{
-			if (count > 50)
-			{
-				// This shouldn't happen
-				dprintf("Receiver: Reset da keine Daten gelesen werden!\n");
-				count=0;
-				ringbuffer_reset(ringbuf);
-				ctx->playstate = eBufferRefill;
-				LCDInfo("Recv. Err ");
-			}
-		
-			usleep(100000);
-			count++;
-			continue;
-		}
-
-		count = 0;
-		if (m_pStreamSocket != NULL)
-		{
-		    int rd = (int)m_pStreamSocket->Get(dvrBuf, (188*7+3)*20, PF_RD_TIMEOUT);
-		    if ( rd > 0)
-		    {
-			if (rd != (188*7+3))
-			    dprintf("Receiver: zu wenig Daten: soll: %d ist: %d\n", (188*7+3), rd);
-			int done = 0;
-			while (done < rd)
-			{
-	/*		    if (done + 2 > rd)
-			    {
-				dprintf("Receiver: Dateninhalt ungültig: %d\n", done);
-				done = rd;
-				continue;
-			    }*/
-			    tsData = (TSData*)&dvrBuf[done];
-	/*		    if ((tsData->packsCount > 7) || (done + tsData->packsCount*TS_PACKET_SIZE + 3 > rd))
-			    {
-				dprintf("Receiver: Packetzahl zu hoch: %d\n", tsData->packsCount);
-				done = rd;
-				continue;
-			    }*/
-			    char crc = 0;
-			    for (int i=0; i<tsData->packsCount;i++)
-			    {
-				char *data = &(tsData->data[i * TS_PACKET_SIZE]);
-				for (int i = 0; i < 4; i++)	
-				    crc += (char)*(data + i);
-			    }
-			    
-			    if (crc == tsData->tsHeaderCRC)
-			    {
-				ringbuffer_write(ringbuf, tsData->data, tsData->packsCount*TS_PACKET_SIZE);
-			    }
-			    else
-			    {
-				dprintf("Receiver: Daten-CRC ungültig. PckCnt:%d, PckNr:%d, CRC:%d %d, PckNr%d\n", 
-				    tsData->packsCount, done, crc, tsData->tsHeaderCRC, tsData->packNr);
-			    }
-			    
-			    if (tsData->packNr != ((oldPackNr < 255) ? oldPackNr+1 : 0))
-				dprintf("Receiver: Packet fehlt: lastNt:%d  aktNr:%d\n", oldPackNr, tsData->packNr);
-			    oldPackNr = tsData->packNr;
-			    done += tsData->packsCount*TS_PACKET_SIZE + 3;
-			}
-			
-			if (ctx->playstate == ePause)
-			    ctx->playstate = ePlayInit;
-			
-			bytes_read += rd;
-			noDataCount = 0;
-		    }
-		    else
-		    {
-			usleep(1000);
-			noDataCount ++;
-			if (noDataCount > 1000)
-			{
-			    ctx->playstate = eBufferRefill;
-			    //ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen
-			    ringbuffer_reset(ringbuf);
-			    dprintf("Receiver: Reset Buffer!!!\n");
-			    LCDInfo("Reset     ");
-			}
-		    }
-		    
-		}
+   		rd = ringbuffer_read(ringbuf_in, pesData, pesPacketLen);		
+   		if ((int)rd != pesPacketLen)
+   		{
+   		   dprintf("not enought bytes for whole packet, have only: %d but LenShoud be %d\n", rd, pesPacketLen);
+		      continue;
+		   }
+		   
+		   rd = ringbuffer_get(ringbuf_in, temp, 3);
+		   if ((rd != 3) || (temp[0]!=0x00) || (temp[1]!=0x00) || (temp[2]!=0x01))
+		   {
+		      dprintf("PES packet not complit. Deleted.\n");
+		      continue;
+		   }
+   		   
+         //--------------------------------------divide PES packet into small TS packets-----------------------    
+         bool first = true;    
+         int i;
+         for (i=0; i < pesPacketLen/184; i++) 
+         {
+            ts[0] = 0x47; //SYNC Byte
+            if (first) ts[1] = 0x40;        // Set PUSI or
+            else       ts[1] = 0x00;        // clear PUSI,  TODO: PID (high) is missing
+            ts[2] = pid & 0xFF;             // PID (low)  
+            ts[3] = 0x10 | ((*cc)&0x0F);    // No adaptation field, payload only, continuity counter 
+            ++(*cc);
+            ringbuffer_write(ringbuf_out, ts, 4);
+            ringbuffer_write(ringbuf_out, pesData + i * 184, 184);
+            first = false;
+         }
+         uchar rest = pesPacketLen % 184;
+         if (rest>0) 
+         {
+            ts[0] = 0x47; //SYNC Byte
+            if (first) ts[1] = 0x40;        // Set PUSI or
+            else       ts[1] = 0x00;        // clear PUSI,  TODO: PID (high) is missing
+            ts[2] = pid & 0xFF;             // PID (low)  
+            ts[3] = 0x30 | ((*cc)&0x0F);    // adaptation field, payload, continuity counter 
+            ++(*cc);
+            ts[4] = 183-rest;
+            if (ts[4]>0) {
+              ts[5] = 0x00;
+              memset(ts + 6, 0xFF, ts[4] - 1);
+            }
+            ringbuffer_write(ringbuf_out, ts, 188 - rest);
+            ringbuffer_write(ringbuf_out, pesData + i * 184, rest);
+         }
+   	}
+   	else
+      {
+         iInSpace = ringbuffer_read_space(ringbuf_in);
+         iOutPlace = ringbuffer_write_space (ringbuf_out);
+         if ((iInSpace < TS_PACKET_SIZE) || (iOutPlace < TS_PACKET_SIZE))
+         {
+             usleep(600000);
+   		    continue;
+         }
+         
+         tsPacketLen = (iOutPlace < iInSpace) ? iOutPlace : iInSpace;
+         tsPacketLen = (tsPacketLen > TS_PACKET_SIZE) ? TS_PACKET_SIZE : tsPacketLen;
+         
+         rd = ringbuffer_read(ringbuf_in, ts, tsPacketLen);
+         ringbuffer_write(ringbuf_out, ts, rd);
+      }
 	}
 
-	if (m_pStreamSocket != NULL)
-	{
-	    m_pStreamSocket->Close();
-	    delete m_pStreamSocket;
-	    m_pStreamSocket = NULL;
-	}
-	
-	dprintf("Receiver: Thread beendet\n");
+	dprintf("Remuxer: Thread beendet\n");
 	pthread_exit(NULL);
 	
 }
@@ -1005,7 +1118,9 @@ void *mp_playStream(void *sArgument)
 {
 	size_t rd;	
 	struct pollfd pHandle;
-	
+	int datacounter;
+	struct timeval oldtime, curtime;
+	int iInSpace, inBuffFill;
 	
 	//-- install poller --
 	pHandle.fd     = ctx->inFd;
@@ -1018,7 +1133,9 @@ void *mp_playStream(void *sArgument)
 	static time_t play_begun=0;
 
 	dprintf("Starte Player-Loop\n");
-	
+
+//   int tsfd = open("/mnt/video/mein.ts", O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0664);
+
 	while( terminate == 0 )
 	{
 		if (ctx->playstate == ePause)
@@ -1036,19 +1153,20 @@ void *mp_playStream(void *sArgument)
 			usleep(200000);
 			continue;
 		}
-		readsize = ringbuffer_read_space(ringbuf);
+		
+		readsize = ringbuffer_read_space(ringbuf_out);
 		if ( ctx->playstate == eBufferRefill || ctx->playstate == eBufferRefillAll) 
 		{
 			unsigned int buffer;
 			usleep(500000);
 			
-			bDuplicateFrame = false;
-
+			datacounter = -1;
+			
 			mp_stopDVBDevices(ctx);
 			if (ctx->playstate == eBufferRefillAll)
-				buffer = (int)(RINGBUFFERSIZE * 0.95);
+				buffer = (int)(ringbuf_out->size * 0.95);
 			else
-				buffer = (int)(RINGBUFFERSIZE / 4);
+				buffer = (int)(ringbuf_out->size / 2);
 
 			if (readsize < buffer)
 			{
@@ -1084,18 +1202,12 @@ void *mp_playStream(void *sArgument)
 			
 			continue;
 		} 
-		else
-		{
-		    /*if (readsize < (int)(RINGBUFFERSIZE / 2) && (ctx->playstate == ePlay))
-		    {
-			dprintf("duplicate frames\n");
-			ioctl (ctx->adec, AUDIO_PAUSE);
-			usleep(200000);
-			ioctl (ctx->vdec, VIDEO_PLAY);
-		    }*/
-		}
+     
+      rd = ringbuffer_read(ringbuf_out, ctx->dvrBuf, ctx->readSize);
+      
+//		write(tsfd, ctx->dvrBuf, ctx->readSize);
 
-		rd = ringbuffer_read(ringbuf, ctx->dvrBuf, ctx->readSize);
+		
 		//dprintf("Puffergroesse: %d, Gelesene Bytes: %d\n",rSize, rd);
 		
 		// Falls der Datenstrom abgebrochen ist -> Neuinitialisierung versuchen. 
@@ -1173,6 +1285,11 @@ void *mp_playStream(void *sArgument)
 	    	//-- write stream data now --
 		int done = 0;
 		int wr;
+		if (datacounter = -1);
+		{
+		   gettimeofday(&oldtime, NULL);
+		   datacounter = 0;
+		}
 		while (rd > 0)
 		{
 			wr = write(ctx->dvr, &ctx->dvrBuf[done], rd);
@@ -1188,9 +1305,30 @@ void *mp_playStream(void *sArgument)
 			}
 			rd   -= wr;
 			done += wr;
+			datacounter += wr;
 		}
+      
+      gettimeofday(&curtime, NULL);
+      double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;		
+      if (secs > 1)
+      {
+         double datarate = datacounter / secs * 8 / 1024 / 1024;
+   		if (datarate < 2)
+   		{
+   		   iInSpace = ringbuffer_read_space(ringbuf_in);
+            inBuffFill = iInSpace * 100 / ringbuf_in->size;
+            if (inBuffFill > 60)
+            {
+               ringbuffer_reset(ringbuf_out);
+            }
+   		   dprintf("Autoresync\n");
+   		   bResync = true;
+   		}
+   		gettimeofday(&oldtime, NULL);
+		   datacounter = 0;
+      }
 
-	    	mp_startDVBDevices(ctx);
+   	mp_startDVBDevices(ctx);
 
 		if (freezed)
 		{
@@ -1198,7 +1336,7 @@ void *mp_playStream(void *sArgument)
 			freezed = false;
 		}
 	}
-
+//   close(tsfd);
 	mp_stopDVBDevices(ctx);
 	sleep(2);
 
@@ -2835,7 +2973,8 @@ extern "C" {
 		ctx->ac3      = -1;
 		const char *sArgument = "bla";
 
-		ringbuf = ringbuffer_create(RINGBUFFERSIZE);
+		ringbuf_in = ringbuffer_create(RINGBUFFERSIZE);
+		ringbuf_out = ringbuffer_create(RINGBUFFERSIZE);
 
 		if(pthread_create(&oLCDThread, 0, updateLCD, (void *)sArgument) != 0)
 		{
@@ -2854,6 +2993,15 @@ extern "C" {
 		{
 			dprintf("Successfully created oTSReceiverThread\n");
 		}	
+		
+		if(pthread_create(&oTSRemuxThread, 0, mp_RemuxStream, (void *)sArgument) != 0)
+		{
+			dprintf("Couldn't create oTSRemuxThread\n");
+		}
+		else
+		{
+			dprintf("Successfully created oTSRemuxThread\n");
+		}
 		
 		if(pthread_create(&oPlayerThread, 0, mp_playStream, (void *)sArgument) != 0)
 		{
@@ -3076,6 +3224,7 @@ extern "C" {
 						}
 					}
 				}
+/*				
 				if(ev.evtype & FBVNC_EVENT_BTN_DOWN)
 				{
 					if(btn_state[ev.key])
@@ -3142,16 +3291,16 @@ extern "C" {
 					{
 						if(panning == 1)
 						{
-							/* no mouse move events, toggle overlay */
+							// no mouse move events, toggle overlay
 							if(global_framebuffer.hide_overlays > 1)
 							{
-								/* was hidden, restore it */
+								// was hidden, restore it
 								vp_restore_overlays();
 								vp_restore_overlays();
 							}
 							else
 							{
-								/* keep overlay hidden */
+								// keep overlay hidden
 							}
 							++ pan_toggle_count;
 							if(pan_toggle_count > 7)
@@ -3169,7 +3318,7 @@ extern "C" {
 					}
 					else if(ev.key==hbtn.action)
 					{
-						/* nothing to do ?! */
+						// nothing to do ?!
 					}
 					else
 					{
@@ -3259,7 +3408,7 @@ extern "C" {
 					scaledPointerEvent(global_framebuffer.mouse_x, global_framebuffer.mouse_y, 1);
 					scaledPointerEvent(global_framebuffer.mouse_x, global_framebuffer.mouse_y, 0);
 				}
-
+*/
 			}
 		}
 		
