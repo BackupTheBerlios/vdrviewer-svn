@@ -25,7 +25,6 @@
 #include <sys/mman.h>
 #include "ringbuffer.h"
 
-ringbuffer_t* bufflock[5] = {0, 0, 0, 0, 0};
 
 /* Create a new ringbuffer to hold at least `sz' bytes of data. The
    actual buffer size is rounded up to the next power of two.  */
@@ -47,60 +46,11 @@ ringbuffer_create (int sz)
   rb->read_ptr = 0;
   rb->buf = malloc (rb->size);
   rb->mlocked = 0;
+  rb->helpbufsize = 1;
+  rb->helpbuf = malloc (rb->helpbufsize);  
 
   return rb;
 }
-
-void ringbuffer_lock (ringbuffer_t * rb)
-{
-   int lockpos;
-   int newpos;
-   int i;
-  
-   do
-   {
-      newpos = -1;
-      lockpos = -1;
-      for (i=0; (i<5) && (lockpos == -1); i++)
-      {
-         if (bufflock[i] == rb)
-            lockpos = i;
-         if ((bufflock[i] == 0) && (newpos == -1))
-            newpos = i;
-      }
-      if (lockpos != -1)
-         usleep(10000);
-    } while (lockpos != -1);
-    
-    if ((newpos >= 0) && (newpos < 5))
-      bufflock[newpos] = rb;
-    else
-      dprintf("[ffnetdev] can not lock Ringbuffer");
-}
-
-void ringbuffer_unlock (ringbuffer_t * rb)
-{
-   int i;
-   
-   for (i=0; i<5; i++)
-   {
-      if (bufflock[i] == rb)
-         bufflock[i] = 0;
-   }
-}
-
-/*bool ringbuffer_locked (ringbuffer_t * rb)
-{
-   int i;
-   
-   for (i=0; i<5; i++)
-   {
-      if (bufflock[i] == rb)
-         return true;
-   }
-   
-   return false;
-}*/
 
 /* Free all data associated with the ringbuffer `rb'. */
 
@@ -111,6 +61,8 @@ ringbuffer_free (ringbuffer_t * rb)
     munlock (rb->buf, rb->size);
   }
   free (rb->buf);
+  
+  free(rb->helpbuf);
 }
 
 /* Lock the data block of `rb' using the system call 'mlock'.  */
@@ -175,49 +127,11 @@ ringbuffer_write_space (ringbuffer_t * rb)
   }
 }
 
-int
-ringbuffer_remove_bad_frame(ringbuffer_t * rb)
-{
-    int removed = 0;    
-    size_t free_cnt, old_ptr, last_ptr;
-    char b1, b2;
-
-    if (((free_cnt = ringbuffer_read_space (rb)) == 0) || (free_cnt < 2))
-    {
-	return 0;
-    }
-
-    old_ptr = rb->read_ptr;
-    while (1)
-    {
-	last_ptr = rb->read_ptr;
-	b1 = rb->buf[rb->read_ptr];
-	rb->read_ptr ++;
-	rb->read_ptr &= rb->size_mask;
-	
-	b2 = rb->buf[rb->read_ptr];
-    
-	if (removed > free_cnt-2)
-	{
-	    rb->read_ptr = old_ptr;
-	    return 0;
-	}
-    
-	if ((b1 == 0x47) && (b2 == 0x40))
-	{
-	    rb->read_ptr = last_ptr;
-	    return removed;
-	}
-	
-	removed++;
-    }
-}
-
-/* The copying data reader.  Copy at most `cnt' bytes from `rb' to
-   `dest'.  Returns the actual number of bytes copied. */
+/* Get read pointer at most `cnt' bytes from `rb' to
+   `dest'.  Returns the actual readable number of bytes . */
 
 inline size_t
-ringbuffer_get (ringbuffer_t * rb, char *dest, size_t cnt)
+ringbuffer_get_readpointer (ringbuffer_t * rb, char **dest, size_t cnt)
 {
   size_t free_cnt;
   size_t cnt2;
@@ -241,17 +155,53 @@ ringbuffer_get (ringbuffer_t * rb, char *dest, size_t cnt)
     n2 = 0;
   }
 
-  memcpy (dest, &(rb->buf[rb->read_ptr]), n1);
-
   if (n2) {
+    if (to_read > rb->helpbufsize)
+    {
+      rb->helpbufsize = to_read;
+      rb->helpbuf = realloc (rb->helpbuf, rb->helpbufsize);
+    }
+    memcpy (rb->helpbuf, &(rb->buf[rb->read_ptr]), n1);
     tmp_read_ptr += n1;
     tmp_read_ptr &= rb->size_mask;
-    memcpy (dest + n1, &(rb->buf[tmp_read_ptr]), n2);
+    memcpy (rb->helpbuf + n1, &(rb->buf[tmp_read_ptr]), n2);
+    *dest = rb->helpbuf;
+  }
+  else
+  {
+    *dest = &(rb->buf[rb->read_ptr]);
   }
 
   return to_read;
 }
 
+
+/* Get write pointer at most `cnt' bytes to `rb' from
+   `src'.  Returns the actual number of bytes can insert. */
+
+inline size_t
+ringbuffer_get_writepointer (ringbuffer_t * rb, char **src, size_t cnt)
+{
+  size_t free_cnt;
+  size_t cnt2;
+  size_t to_write;
+  
+  if ((free_cnt = ringbuffer_write_space (rb)) == 0) {
+    return 0;
+  }
+
+  to_write = cnt > free_cnt ? free_cnt : cnt;
+
+  cnt2 = rb->write_ptr + to_write;
+
+  if (cnt2 > rb->size) {
+    return 0;
+  } else {
+    *src = &(rb->buf[rb->write_ptr]);
+  }
+
+  return to_write;
+}
 
 /* The copying data reader.  Copy at most `cnt' bytes from `rb' to
    `dest'.  Returns the actual number of bytes copied. */

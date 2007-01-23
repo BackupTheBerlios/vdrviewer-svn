@@ -61,7 +61,6 @@ typedef unsigned char screen_t[LCD_BUFFER_SIZE];
 int lcd;
 cDataSocket *m_pLCDSocket    = NULL;
 cDataSocket *m_pStreamSocket = NULL;
-bool graph_lcd;
 screen_t screen, glcd_screen;
 
 
@@ -89,12 +88,13 @@ CZapitClient *g_Zapit;
 #define SAA "/dev/dbox/saa0"
 const int fncmodes[] = { AVS_FNCOUT_EXT43,AVS_FNCOUT_EXT169 };
 const int saamodes[] = { SAA_WSS_43F,SAA_WSS_169F };
-int screenmode, fnc_old, saa_old, avs, saa;
+int fnc_old, saa_old, avs, saa;
 fbvnc_framebuffer_t global_framebuffer;
 int fb_fd;
 int rc_fd;
-bool lcd_info = false;
-double datarate=0;
+unsigned int bytes_read=0;
+int g_iScreenMode=0, g_iScreenModeOld;
+double g_dDataRate=0, g_dDataRateOld=0;
 #ifdef HAVE_DREAMBOX_HARDWARE
 int ms_fd;
 int ms_fd_usb;
@@ -106,11 +106,12 @@ int usepointer = 0;
 bool bResync = false;
 int lcd_port;
 int ts_port;
-int is_ac3=-1;
+int g_iIsAC3=-1, g_iIsAC3Old=-1;
 int auto_aspratio;
 int use_lirc;
-size_t readsize;
-size_t iPlaceToWrite;
+int g_iInSpace=0, g_iOutSpace=0, g_iInSpaceOld=0, g_iOutSpaceOld=0; 
+bool g_bLcdOld, g_bGraphLcd=false, g_bGraphLcdOld=false, g_bLcdInfo=false;
+double g_cpuUse = -1, g_cpuUseOld = -1;
 ringbuffer_t *ringbuf_in;
 ringbuffer_t *ringbuf_out;
 CControldClient	*g_Controld;
@@ -213,13 +214,12 @@ void setMoreTransparency( bool bDo )
 
 
 #define TS_PACKET_SIZE 188
-#define PF_BUF_SIZE   (348 * TS_PACKET_SIZE)
-#define PF_DMX_SIZE   (PF_BUF_SIZE + PF_BUF_SIZE/2)
-#define RINGBUFFERSIZE (PF_BUF_SIZE*50)
+#define PF_BUF_SIZE   (210 * TS_PACKET_SIZE)
+#define RINGBUFFERSIZE (PF_BUF_SIZE*90)
 #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
 #define IPACKS		2048
 // original timeout: #define PF_RD_TIMEOUT 3000
-#define PF_RD_TIMEOUT 500
+#define PF_RD_TIMEOUT 5000
 #define PF_EMPTY      0
 #define PF_READY      1
 #define PF_LST_ITEMS  30
@@ -228,6 +228,10 @@ void setMoreTransparency( bool bDo )
 #define PF_JMP_START  0
 #define PF_JMP_MID    5555
 #define PF_JMP_END    9999
+
+#define RECIVE_THREAD_PRIO 50
+#define REMUX_THREAD_PRIO 0
+#define PLAY_THREAD_PRIO 100
 
 
 
@@ -248,6 +252,12 @@ typedef struct
 	int                apid;
 	long long          zapid;
 } MP_LST_ITEM;
+
+struct SCpuStat
+{
+   unsigned int user, nice, system, idle;
+};
+   
 
 typedef unsigned char uchar;
 
@@ -284,7 +294,7 @@ typedef struct
 	off_t fileSize;
 
 	size_t   readSize;
-	char  dvrBuf[PF_BUF_SIZE];
+	char  *dvrBuf;
 	bool  startDMX;
 
 	bool  isStream;
@@ -378,51 +388,52 @@ int draw_screen(screen_t screen,int lcd)
 	return write(lcd,screen,LCD_BUFFER_SIZE);
 }
 
-void LCDInfo(char debug_info[] = "", bool refresh = false)
+void LCDInfo(char debug_info[] = "", bool refresh = false, bool firstupdate = false)
 {
-	static unsigned int l_rsize=0, l_wsize=0;
-	static int l_ac3=0, l_screenmode=0;
-	static double l_drate=1;
-	static bool l_lcd = false, l_graph_lcd=false;
-	
 	char string[100];		
 	
 	if (refresh)
 	{
-		if (l_rsize != readsize)
+		if ((g_iInSpaceOld != g_iInSpace) || (firstupdate))
 		{
-			draw_progressbar(screen,0,27,1,119,ringbuf_out->size,readsize,LCD_PIXEL_ON | FILLED);
-			l_rsize = readsize;
+			draw_progressbar(screen,0,27,1,119,ringbuf_out->size,g_iInSpace,LCD_PIXEL_ON | FILLED);
+			g_iInSpaceOld = g_iInSpace;
 		}
 		
-		if (l_wsize != iPlaceToWrite)
+		if ((g_iOutSpaceOld != g_iOutSpace) || (firstupdate))
 		{
-			draw_progressbar(screen,0,29,1,119,ringbuf_out->size,iPlaceToWrite,LCD_PIXEL_ON | FILLED);
-			l_wsize = iPlaceToWrite;
+			draw_progressbar(screen,0,29,1,119,ringbuf_out->size,g_iOutSpace,LCD_PIXEL_ON | FILLED);
+			g_iOutSpaceOld = g_iOutSpace;
 		}
 		
-		if (l_drate != datarate)
+		if ((g_dDataRateOld != g_dDataRate) || (firstupdate))
 		{
-			draw_progressbar(screen,0,21,4,119,10000,(int)datarate*1000,LCD_PIXEL_ON | FILLED);
-			sprintf(string, "R: %2.3f Mbit/s", datarate);
+			draw_progressbar(screen,0,21,2,119,10000,(int)g_dDataRate*1000,LCD_PIXEL_ON | FILLED);
+			sprintf(string, "R: %2.3f Mbit/s", g_dDataRate);
 			render_string(screen,0,12,string);
-			l_drate = datarate;	
+			g_dDataRateOld = g_dDataRate;	
 		}
 		
-		if (l_ac3 != is_ac3 || screenmode != l_screenmode)
+		if ((g_cpuUseOld != g_cpuUse) || (firstupdate))
 		{
-			sprintf(string, "16:9 %s DD %s", screenmode == 1 ? "on " : "off", is_ac3 == 1 ? "on " : (is_ac3 == 0 ? "off" : "?  ") );
+			draw_progressbar(screen,0,23,2,119,100,(int)g_cpuUse,LCD_PIXEL_ON | FILLED);
+			g_cpuUseOld = g_cpuUse;	
+		}
+		
+		if ((g_iIsAC3Old != g_iIsAC3 || g_iScreenModeOld != g_iScreenMode) || (firstupdate))
+		{
+			sprintf(string, "16:9 %s DD %s", g_iScreenMode == 1 ? "on " : "off", g_iIsAC3 == 1 ? "on " : (g_iIsAC3 == 0 ? "off" : "?  ") );
 			render_string(screen,0,33,string);
-			l_ac3 = is_ac3;
-			l_screenmode = screenmode;
+			g_iIsAC3Old = g_iIsAC3;
+			g_iScreenModeOld = g_iScreenMode;
 		}
 		
-		if ((m_pLCDSocket != NULL) != l_lcd || graph_lcd != l_graph_lcd)
+		if (((m_pLCDSocket != NULL) != g_bLcdOld || g_bGraphLcdOld != g_bGraphLcd) || (firstupdate))
 		{
-			sprintf(string, "GraphLCD: %s", (m_pLCDSocket != NULL) ? (graph_lcd ? "yes " : "wait") : "no  ");
+			sprintf(string, "GraphLCD: %s", (m_pLCDSocket != NULL) ? (g_bGraphLcd ? "yes " : "wait") : "no  ");
 			render_string(screen,0,44,string);
-			l_lcd = (m_pLCDSocket != NULL);
-			l_graph_lcd = graph_lcd;
+			g_bLcdOld = (m_pLCDSocket != NULL);
+			g_bGraphLcdOld = g_bGraphLcd;
 		}
 	}
 	
@@ -432,7 +443,7 @@ void LCDInfo(char debug_info[] = "", bool refresh = false)
 		render_string(screen,0,55,string);
 	}
 		
-	if (lcd_info == true || graph_lcd == false)
+	if (g_bLcdInfo == true || g_bGraphLcd == false)
 	    draw_screen(screen,lcd);
 }
 
@@ -440,8 +451,15 @@ void *updateLCD(void *sArgument)
 {
 	int lcd_mode;
 	screen_t buf;
+	double secs;
+	struct timeval curtime;
+	static struct timeval oldtime;
+	FILE *file;
+	SCpuStat stat;
+	static SCpuStat oldStat;
+	unsigned int cpuIdle, cpu;
 	
-	graph_lcd = false;
+	g_bGraphLcd = false;
 	
 	lcd_mode=LCD_MODE_BIN;
 	if ((ioctl(lcd,LCD_IOCTL_ASC_MODE,&lcd_mode)<0) || (ioctl(lcd,LCD_IOCTL_CLEAR)<0))
@@ -451,42 +469,76 @@ void *updateLCD(void *sArgument)
 
 	memset(screen,0,sizeof(screen));	
 	render_string(screen,22,1, "VDR-Viewer");
-	LCDInfo("Init", true);
+	LCDInfo("Init", true, true);
 	
 	m_pLCDSocket = new cDataSocketTCP(hostname, lcd_port);
 	m_pLCDSocket->Open();
 	LCDInfo("Init", true); // for GraphLCD-Status
 	
-	while (!terminate && m_pLCDSocket != NULL && m_pLCDSocket->IsOpen())
+	gettimeofday(&oldtime, NULL);
+	bytes_read = 0;
+	
+	while (!terminate)
 	{
-		int len = m_pLCDSocket->Get((char*)buf, sizeof(buf));
-		if (len <= 0)
-		{
-			perror("LCD: recv");
-			sleep(1);
-		}
-		else 
-		{
-			graph_lcd = true;
-			memset(glcd_screen,0,sizeof(glcd_screen));	
-
-			for (int y=0;y<64;y++)
-			{
-				for (int x=0;x<120/8;x++)
-				{
-					for (int k=0;k<8;k++)
-					{
-						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
-							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
-						else
-							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
-					} 
-				}
-			}
-			
-			if (lcd_info == false)
-				draw_screen(glcd_screen, lcd);
-		}
+	   gettimeofday(&curtime, NULL);
+      if (curtime.tv_sec - oldtime.tv_sec > 3)
+      {
+         secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;     
+         g_dDataRate = bytes_read / secs * 8 / 1024 / 1024;
+         g_iInSpace = ringbuffer_read_space(ringbuf_in);
+         g_iOutSpace = ringbuffer_read_space(ringbuf_out);
+         if ((file = fopen("/proc/stat", "r")) > 0)
+         {
+            stat.user = 0;
+            while (((fscanf(file, "cpu  %d %d %d %d", &(stat.user), &(stat.nice), &(stat.system), &(stat.idle))) != EOF) && 
+                   (stat.user == 0));
+            fclose(file);
+            cpuIdle = stat.idle - oldStat.idle;
+            cpu = (stat.user + stat.nice + stat.system + stat.idle) - (oldStat.user + oldStat.nice + oldStat.system + oldStat.idle);
+            g_cpuUse = (cpu - cpuIdle) * 100 / cpu;
+            oldStat = stat;
+         }
+         dprintf("Info: Rate %2.4f MBits/s, IN-Buff fill %d %% OUT-Buff fill %d%%, CPU %2.1f%%\n", g_dDataRate, (int)(g_iInSpace*100/ringbuf_in->size), (int)(g_iOutSpace*100/ringbuf_out->size), g_cpuUse);
+         oldtime = curtime;
+         bytes_read = 0;
+         LCDInfo("", true);
+      }
+      
+      if (m_pLCDSocket != NULL && m_pLCDSocket->IsOpen())
+      {
+   		int len = m_pLCDSocket->Get((char*)buf, sizeof(buf));
+   		if (len <= 0)
+   		{
+   			perror("LCD: recv");
+   			sleep(1);
+   		}
+   		else 
+   		{
+   			g_bGraphLcd = true;
+   			memset(glcd_screen,0,sizeof(glcd_screen));	
+   
+   			for (int y=0;y<64;y++)
+   			{
+   				for (int x=0;x<120/8;x++)
+   				{
+   					for (int k=0;k<8;k++)
+   					{
+   						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
+   							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
+   						else
+   							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
+   					} 
+   				}
+   			}
+   			
+   			if (g_bLcdInfo == false)
+   				draw_screen(glcd_screen, lcd);
+   		}
+      }
+      else
+   	{
+   	   sleep(1);
+   	}
 	}
 
   	dprintf("LCD: Thread beendet\n");
@@ -612,6 +664,11 @@ static void mp_startDVBDevices(MP_CTX *ctx)
 		ioctl(ctx->adec, AUDIO_PLAY);             // audio
 		ioctl(ctx->vdec, VIDEO_PLAY);             // video
 		ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL); // needs sync !
+		
+		if(ctx->ac3 == 1)
+		   ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE, 0UL);
+		else
+		   ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE, 1UL);
 			
 		//-- ... demuxers also --
 		ioctl (ctx->dmxa, DMX_START);	// audio first !
@@ -691,86 +748,26 @@ void checkAspectRatio (int vdec, bool init)
 			if(new_size.aspect_ratio == VIDEO_FORMAT_4_3)
 			{
 				vdt = VIDEO_LETTER_BOX;
-				screenmode = 0;
+				g_iScreenMode = 0;
 			}
 			else
 			{
 				vdt = VIDEO_CENTER_CUT_OUT;
-				screenmode = 1;
+				g_iScreenMode = 1;
 			}
 			
-			dprintf("AR change detected in auto mode, adjusting display format %d\n", screenmode);
+			dprintf("AR change detected in auto mode, adjusting display format %d\n", g_iScreenMode);
 			
 			if(ioctl(vdec, VIDEO_SET_DISPLAY_FORMAT, vdt))
 				perror("VIDEO_SET_DISPLAY_FORMAT");
 			memcpy(&size, &new_size, sizeof(size));
 			
-			ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
-			ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
+			ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[g_iScreenMode]);
+			ioctl(saa, SAAIOSWSS, &saamodes[g_iScreenMode]);
 						
 		}
 		last_check=time(NULL);
 	}
-}
-
-int checkAC3(char* buf, int len, bool force_update)
-{
-	int ac3 = -1, off;
-	static int last_ac3=0;
-	static time_t last_check=0;
-	
-	if (force_update || time(NULL) > last_check+1 || last_ac3 == -1)
-	{
-		for (int i = 0; i < len && ac3 == -1; i++)
-		{
-			if (buf[i] == 0x47)
-			{
-				if (buf[i+1] & 0x40)
-				{
-					off = 0;
-					if ( buf[3+i] & 0x20)//adapt field?
-						off = buf[4+i] + 1;
-					
-				  	switch(buf[i+7+off])
-				  	{
-						case 0xBD: //PRIVATE_STREAM1:
-							ac3=1;
-						  	break;
-					  	case 0xC0 ... 0xDF:
-							ac3=0;
-						  	break;
-				  	}
-				}
-				i += 187;
-			 }
-			 if (ac3 >= 0) break;
-		}
-		
-		last_ac3 = ac3;
-		
-	  	if (ac3 != ctx->ac3 && ac3 != -1)
-	   	{
-			ctx->ac3 = ac3;
-			
-			
-			if (DevicesOpened)
-			{
-				usleep(500000);
-				mp_stopDVBDevices(ctx);
-				if(ctx->ac3 == 1)
-					ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
-				else
-					ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,1UL);	// bypass off
-			}
-						
-			dprintf("AC3: %d\n", ctx->ac3);
-	
-		}
-	
-		last_check=time(NULL);
-	}
-	
-	return ctx->ac3;
 }
 
 // Pacemaker's stuff End
@@ -860,12 +857,12 @@ void cleanup_and_exit(char *msg, int ret)
 
 void *mp_ReceiveStream(void *sArgument)
 {
-   unsigned int bytes_read=0;
-   struct timeval oldtime, curtime;
    int count = 0;
    char  dvrBuf[PF_BUF_SIZE];
+   char  *pDvrBuf;
    int noDataCount = 0;
-   int iInSpace, iOutSpace; 
+   int iPlaceToWrite;
+   int rd;
    
    dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
    
@@ -881,23 +878,8 @@ void *mp_ReceiveStream(void *sArgument)
       dprintf("Receicer: Connected\n");
    }
    
-   gettimeofday(&oldtime, NULL);
-   
-   while( terminate == 0 )
+   while( !terminate )
    {
-      gettimeofday(&curtime, NULL);
-      double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
-      if (secs > 3)
-      {
-         datarate = bytes_read / secs * 8 / 1024 / 1024;
-         iInSpace = ringbuffer_read_space(ringbuf_in);
-         iOutSpace = ringbuffer_read_space(ringbuf_out);
-         dprintf("Info: Rate %2.4f MBits/s, IN-Buffer fill %d %% OUT-Buffer fill %d %%\n", datarate, (int)(iInSpace*100/ringbuf_in->size), (int)(iOutSpace*100/ringbuf_out->size));
-         oldtime = curtime;
-         bytes_read = 0;
-         LCDInfo("", true);
-      }
-  
       iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
       if ( PF_BUF_SIZE > iPlaceToWrite )
       {
@@ -919,11 +901,22 @@ void *mp_ReceiveStream(void *sArgument)
       count = 0;
       if (m_pStreamSocket != NULL)
       {
-         int rd = (int)m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);
-         if ( rd > 0)
+         iPlaceToWrite = ringbuffer_get_writepointer(ringbuf_in, &pDvrBuf, PF_BUF_SIZE);
+         if (iPlaceToWrite == PF_BUF_SIZE)
          {
-            ringbuffer_write(ringbuf_in, dvrBuf, rd);
-            
+            rd = (int)m_pStreamSocket->Get(pDvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);
+            if (rd > 0)
+               ringbuffer_write_advance(ringbuf_in, rd);
+         }
+         else
+         {
+            rd = (int)m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);
+            if (rd > 0)
+               ringbuffer_write(ringbuf_in, dvrBuf, rd);
+         }
+         
+         if ( rd > 0)
+         {       
             if (ctx->playstate == ePause)
                ctx->playstate = ePlayInit;
             
@@ -962,63 +955,55 @@ void *mp_ReceiveStream(void *sArgument)
 void *mp_RemuxStream(void *sArgument)
 {
    size_t rd;
-   char pesData[IPACKS];
-   char ts[PF_BUF_SIZE];
-   char temp[3];
+   char *pPesData, *pTSData;
+   char ts[TS_PACKET_SIZE];
 	uchar acc=0;    // continutiy counter for audio packets
 	uchar vcc=0;    // continutiy counter for video packets
 	uchar *cc;      // either cc=&vcc; or cc=&acc;
 	unsigned short pid=0;
 	int pesPacketLen;
 	int tsPacketLen;
-   int iInSpace, iOutPlace, iOutSpace, inBuffFill, outBuffFill;
+   int iInSpace, iOutPlace;
+   int tsPacksCount;
+   uchar rest;
 	
 	dprintf("RemuxThread gestartet, Server: %s\n", hostname);
 	
 	while( terminate == 0 )
 	{
 	   if (1)
-      {
-         iInSpace = ringbuffer_read_space(ringbuf_in);
-         iOutSpace = ringbuffer_read_space(ringbuf_out);
-         inBuffFill = iInSpace * 100 / ringbuf_in->size;
-         outBuffFill = iOutSpace * 100 / ringbuf_out->size;
-         
-         if ((inBuffFill < 10) && (outBuffFill > 70))
-         {
-            usleep(600000);
-            continue;
-         }
-         
-   		rd = ringbuffer_get(ringbuf_in, pesData, 6);
+      {        
+   		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 6);
    		if (rd < 6)
    		{  
    		    usleep(600000);
    		    continue;
    		}
    		  		
-   		if ( (pesData[0]!=0x00) || (pesData[1]!=0x00) || (pesData[2]!=0x01) ) 
+   		if ( (pPesData[0]!=0x00) || (pPesData[1]!=0x00) || (pPesData[2]!=0x01) ) 
    		{
    		    int deleted = 0;
    		    do
    		    {
-   		       ringbuffer_read(ringbuf_in, pesData, 1); // remove 1 Byte
-   		       rd = ringbuffer_get(ringbuf_in, pesData, 3);
+   		       ringbuffer_read_advance(ringbuf_in, 1); // remove 1 Byte
+   		       rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 3);
    		       deleted ++;
    		    }
-   		    while ((rd == 3) && ((pesData[0]!=0x00) || (pesData[1]!=0x00) || (pesData[2]!=0x01)));
+   		    while ((rd == 3) && ((pPesData[0]!=0x00) || (pPesData[1]!=0x00) || (pPesData[2]!=0x01)));
    		    dprintf("No valid PES signature found. %d Bytes deleted.\n", deleted);
    		    continue;
    		}
    		
-         if ( (pesData[3]>=0xC0) && (pesData[3]<=0xDF) || pesData[3] == 0xBD ) 
+         if ( (pPesData[3]>=0xC0) && (pPesData[3]<=0xDF) || pPesData[3] == 0xBD ) 
    		{
    		    pid=ctx->pida;
    		    cc=&acc;
+   		    
+   		    g_iIsAC3 = (pPesData[3] == 0xBD);
    		} 
    		else 
    		{
-            if ( (pesData[3]>=0xE0) && (pesData[3]<=0xEF) ) 
+            if ( (pPesData[3]>=0xE0) && (pPesData[3]<=0xEF) ) 
             {
                pid=ctx->pidv;
                cc=&vcc;
@@ -1027,13 +1012,15 @@ void *mp_RemuxStream(void *sArgument)
             {
                dprintf("Unknown stream id: neither video nor audio type.\n");
                // throw away whole PES packet
-               ringbuffer_read(ringbuf_in, pesData, 1); // remove 1 Byte
+               ringbuffer_read_advance(ringbuf_in, 1); // remove 1 Byte
                continue;
             }
    		}
    		
-   		pesPacketLen = ((pesData[4]<<8) | pesData[5]) + 6;
-   		tsPacketLen = ((int)pesPacketLen/184) * 188  + ((pesPacketLen % 184 > 0) ? 188 : 0); 
+   		pesPacketLen = ((pPesData[4]<<8) | pPesData[5]) + 6;
+   		tsPacksCount = (int)pesPacketLen / 184;
+   		rest = pesPacketLen % 184;
+   		tsPacketLen = (tsPacksCount) * TS_PACKET_SIZE  + ((rest > 0) ? TS_PACKET_SIZE : 0); 
    		iInSpace = ringbuffer_read_space(ringbuf_in);
          iOutPlace = ringbuffer_write_space (ringbuf_out);
    		if ((iInSpace < pesPacketLen + 3) || (iOutPlace < tsPacketLen))
@@ -1042,24 +1029,18 @@ void *mp_RemuxStream(void *sArgument)
    		    continue;
    		}  
 
-   		rd = ringbuffer_read(ringbuf_in, pesData, pesPacketLen);		
+   		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, pesPacketLen);		
    		if ((int)rd != pesPacketLen)
    		{
    		   dprintf("not enought bytes for whole packet, have only: %d but LenShoud be %d\n", rd, pesPacketLen);
 		      continue;
 		   }
 		   
-		   rd = ringbuffer_get(ringbuf_in, temp, 3);
-		   if ((rd != 3) || (temp[0]!=0x00) || (temp[1]!=0x00) || (temp[2]!=0x01))
-		   {
-		      dprintf("PES packet not complit. Deleted.\n");
-		      continue;
-		   }
    		   
          //--------------------------------------divide PES packet into small TS packets-----------------------    
          bool first = true;    
          int i;
-         for (i=0; i < pesPacketLen/184; i++) 
+         for (i=0; i < tsPacksCount; i++) 
          {
             ts[0] = 0x47; //SYNC Byte
             if (first) ts[1] = 0x40;        // Set PUSI or
@@ -1068,10 +1049,9 @@ void *mp_RemuxStream(void *sArgument)
             ts[3] = 0x10 | ((*cc)&0x0F);    // No adaptation field, payload only, continuity counter 
             ++(*cc);
             ringbuffer_write(ringbuf_out, ts, 4);
-            ringbuffer_write(ringbuf_out, pesData + i * 184, 184);
+            ringbuffer_write(ringbuf_out, pPesData + i * 184, 184);
             first = false;
          }
-         uchar rest = pesPacketLen % 184;
          if (rest>0) 
          {
             ts[0] = 0x47; //SYNC Byte
@@ -1085,9 +1065,10 @@ void *mp_RemuxStream(void *sArgument)
               ts[5] = 0x00;
               memset(ts + 6, 0xFF, ts[4] - 1);
             }
-            ringbuffer_write(ringbuf_out, ts, 188 - rest);
-            ringbuffer_write(ringbuf_out, pesData + i * 184, rest);
+            ringbuffer_write(ringbuf_out, ts, TS_PACKET_SIZE - rest);
+            ringbuffer_write(ringbuf_out, pPesData + i * 184, rest);
          }
+         ringbuffer_read_advance(ringbuf_in, pesPacketLen);
    	}
    	else
       {
@@ -1102,8 +1083,9 @@ void *mp_RemuxStream(void *sArgument)
          tsPacketLen = (iOutPlace < iInSpace) ? iOutPlace : iInSpace;
          tsPacketLen = (tsPacketLen > TS_PACKET_SIZE) ? TS_PACKET_SIZE : tsPacketLen;
          
-         rd = ringbuffer_read(ringbuf_in, ts, tsPacketLen);
-         ringbuffer_write(ringbuf_out, ts, rd);
+         rd = ringbuffer_get_readpointer(ringbuf_in, &pTSData, tsPacketLen);
+         ringbuffer_write(ringbuf_out, pTSData, rd);
+         ringbuffer_read_advance(ringbuf_in, tsPacketLen);
       }
 	}
 
@@ -1113,14 +1095,15 @@ void *mp_RemuxStream(void *sArgument)
 }
 
 
-
 void *mp_playStream(void *sArgument)
 {
 	size_t rd;	
 	struct pollfd pHandle;
 	int datacounter;
 	struct timeval oldtime, curtime;
-	int iInSpace, inBuffFill;
+	size_t iInSpace, iOutSpace, inBuffFill;
+	double outrate, secs;
+	size_t buffer;
 	
 	//-- install poller --
 	pHandle.fd     = ctx->inFd;
@@ -1135,6 +1118,13 @@ void *mp_playStream(void *sArgument)
 	dprintf("Starte Player-Loop\n");
 
 //   int tsfd = open("/mnt/video/mein.ts", O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0664);
+
+   if (!mp_openDVBDevices(ctx))
+	{
+		LCDInfo("DVB ERR   ");
+		dprintf("Player: DVB Error\n");
+		terminate = 1;
+	}
 
 	while( terminate == 0 )
 	{
@@ -1154,21 +1144,21 @@ void *mp_playStream(void *sArgument)
 			continue;
 		}
 		
-		readsize = ringbuffer_read_space(ringbuf_out);
 		if ( ctx->playstate == eBufferRefill || ctx->playstate == eBufferRefillAll) 
 		{
-			unsigned int buffer;
 			usleep(500000);
 			
 			datacounter = -1;
 			
 			mp_stopDVBDevices(ctx);
 			if (ctx->playstate == eBufferRefillAll)
-				buffer = (int)(ringbuf_out->size * 0.95);
+				buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) * 0.95);
 			else
-				buffer = (int)(ringbuf_out->size / 2);
+				buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 4);
 
-			if (readsize < buffer)
+         iInSpace = ringbuffer_read_space(ringbuf_in);
+         iOutSpace = ringbuffer_read_space(ringbuf_out);
+			if (iInSpace + iOutSpace < buffer)
 			{
 				if (play_begun != time(NULL))
 				{
@@ -1180,7 +1170,7 @@ void *mp_playStream(void *sArgument)
 					}	
 					else
 					{
-						dprintf("Player: Buffering readsite:%d buffer:%d to_read:%d\n", readsize, buffer, ctx->readSize);
+						dprintf("Player: Buffering readsite:%d buffer:%d to_read:%d\n", iOutSpace, buffer, ctx->readSize);
 						LCDInfo("Buffer    ");
 					}
 
@@ -1203,7 +1193,8 @@ void *mp_playStream(void *sArgument)
 			continue;
 		} 
      
-      rd = ringbuffer_read(ringbuf_out, ctx->dvrBuf, ctx->readSize);
+      rd = ringbuffer_get_readpointer(ringbuf_out, &(ctx->dvrBuf), ctx->readSize);
+      usleep(1000);
       
 //		write(tsfd, ctx->dvrBuf, ctx->readSize);
 
@@ -1217,10 +1208,11 @@ void *mp_playStream(void *sArgument)
 		//
 		// wenn nicht bereits durch Reciever ein Refill initiiert wurde, dann den
 		// Buffer komplett füllen um einen erneuten Buffer-underrun zu vermeiden
-		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize || readsize < ctx->readSize || bResync) )
+		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize || bResync) )
 		{
 			dprintf("Datenstrom abgebrochen oder ReSync -> Neuinit!\n");
-			dprintf("play: %lus buffer:%d read:%d to_read:%d \n", time(NULL) - play_begun, readsize, rd, ctx->readSize);
+			iOutSpace = ringbuffer_read_space(ringbuf_out);
+			dprintf("play: %lus buffer:%d read:%d to_read:%d \n", time(NULL) - play_begun, iOutSpace, rd, ctx->readSize);
 
 			if (bResync)
 			{
@@ -1262,23 +1254,19 @@ void *mp_playStream(void *sArgument)
 			continue;
 		}
 
-		if (!mp_openDVBDevices(ctx))
-		{
-			LCDInfo("DVB ERR   ");
-			dprintf("Player: DVB Error\n");
-			sleep(5);
-			continue;
-		}
-
 		if (ctx->playstate == ePlayInit)
 		{
 			ctx->playstate = ePlay;
 			LCDInfo("Playing   ");
 			dprintf("Player: Playing\n");
-			is_ac3 = checkAC3(ctx->dvrBuf, rd, true);
 		}
-		else
-			is_ac3 = checkAC3(ctx->dvrBuf, rd, false);
+		
+		if (g_iIsAC3 != ctx->ac3)
+		{
+		   usleep(500000);
+		   mp_stopDVBDevices(ctx);
+		   ctx->ac3 = g_iIsAC3;
+		}
 
 		checkAspectRatio(ctx->vdec, false);
 
@@ -1292,10 +1280,7 @@ void *mp_playStream(void *sArgument)
 		}
 		while (rd > 0)
 		{
-			wr = write(ctx->dvr, &ctx->dvrBuf[done], rd);
-			
-			//dprintf("Player: Play to_wr: %d  wr: %d\n", rd, wr);
-			
+			wr = write(ctx->dvr, ctx->dvrBuf + done, rd);
 			if (wr < 0)
 			{
 				perror("Player: Stream write error");
@@ -1307,13 +1292,14 @@ void *mp_playStream(void *sArgument)
 			done += wr;
 			datacounter += wr;
 		}
+		ringbuffer_read_advance(ringbuf_out, ctx->readSize);
       
       gettimeofday(&curtime, NULL);
-      double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;		
-      if (secs > 1)
+      if (curtime.tv_sec - oldtime.tv_sec > 1)
       {
-         double datarate = datacounter / secs * 8 / 1024 / 1024;
-   		if (datarate < 2)
+         secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;		
+         outrate = datacounter / secs * 8 / 1024 / 1024;
+   		if (outrate < 2)
    		{
    		   iInSpace = ringbuffer_read_space(ringbuf_in);
             inBuffFill = iInSpace * 100 / ringbuf_in->size;
@@ -1324,7 +1310,7 @@ void *mp_playStream(void *sArgument)
    		   dprintf("Autoresync\n");
    		   bResync = true;
    		}
-   		gettimeofday(&oldtime, NULL);
+   		oldtime = curtime;
 		   datacounter = 0;
       }
 
@@ -1352,7 +1338,7 @@ void Resync()
 
 void ToggleLCD()
 {
-	lcd_info = lcd_info ? false : true;
+	g_bLcdInfo = g_bLcdInfo ? false : true;
 }
 
 extern "C"
@@ -1526,8 +1512,8 @@ void fbvnc_init() {
 	}
 	ioctl(saa, SAAIOGWSS, &saa_old);
 
-	//ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
-	//ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
+	//ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[g_iScreenMode]);
+	//ioctl(saa, SAAIOSWSS, &saamodes[g_iScreenMode]);
 }
 
 void fbvnc_close() {
@@ -2424,9 +2410,9 @@ dprintf("reading ms_fd\n");
             {
                if(iev.value==1)
                   RetEvent(FBVNC_EVENT_NULL); // ignore key pressed event
-				//screenmode = 1-screenmode;
-				//ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[screenmode]);
-				//ioctl(saa, SAAIOSWSS, &saamodes[screenmode]);
+				//g_iScreenMode = 1-g_iScreenMode;
+				//ioctl(avs, AVSIOSSCARTPIN8, &fncmodes[g_iScreenMode]);
+				//ioctl(saa, SAAIOSWSS, &saamodes[g_iScreenMode]);
             }
             else if(iev.code == BTN_LEFT)
             {
@@ -2793,8 +2779,8 @@ void show_pnm_image() {
 extern "C" {
 	void plugin_exec(PluginParam *par)
 	{
-		fbvnc_overlay_t *active_overlay = 0;
-		int panning = 0;
+		//fbvnc_overlay_t *active_overlay = 0;
+		//int panning = 0;
 		int readfd[2];	/* pnmfd and/or rfbsock */
 		static int pnmfd = -1;
 
@@ -2839,7 +2825,7 @@ extern "C" {
 			return;
 		}
 
-		screenmode = 0;
+		g_iScreenMode = 0;
 		get_fbinfo();
 
 		char szServerNr[20] = "";
@@ -2915,7 +2901,7 @@ extern "C" {
 				else if ( !strcmp(line,szPasswd           ) ) strcpy(passwdString, p);
 				else if ( !strcmp(line,szMouse            ) ) usepointer = atoi(p);
 				else if ( !strcmp(line,"debug"            ) ) debug = atoi(p);
-				else if ( !strcmp(line,"screenmode"       ) ) screenmode = atoi(p);
+				else if ( !strcmp(line,"screenmode"       ) ) g_iScreenMode = atoi(p);
 			}
 			fclose(fp);
 		}
@@ -2935,7 +2921,7 @@ extern "C" {
 		strcpy(passwdString,config.getString(szPasswd,"").substr(0,8).c_str());
 		debug = config.getInt32("debug",1);
 		//debug = 1;
-		screenmode = config.getInt32("screenmode",0);
+		g_iScreenMode = config.getInt32("screenmode",0);
 #endif
 
 		dprintf("Server %s osdport: %d tsport %d lcdport %d\n", hostname, vnc_port, ts_port, lcd_port);
@@ -2966,7 +2952,7 @@ extern "C" {
 		ctx->pos = 0L;
 		ctx->canPause = false;
 		
-		ctx->readSize = PF_BUF_SIZE / 2;
+		ctx->readSize = PF_BUF_SIZE;
 		
 		ctx->pidv     = 99;
 		ctx->pida     = 100;
@@ -2992,6 +2978,12 @@ extern "C" {
 		else
 		{
 			dprintf("Successfully created oTSReceiverThread\n");
+			
+		   struct sched_param schedp;
+         memset(&schedp, 0, sizeof(schedp));
+         schedp.sched_priority = RECIVE_THREAD_PRIO;
+         if (pthread_setschedparam(oTSReceiverThread, SCHED_OTHER, &schedp) != 0)
+            dprintf("pthread_setschedparam failed");
 		}	
 		
 		if(pthread_create(&oTSRemuxThread, 0, mp_RemuxStream, (void *)sArgument) != 0)
@@ -3001,6 +2993,12 @@ extern "C" {
 		else
 		{
 			dprintf("Successfully created oTSRemuxThread\n");
+			
+			struct sched_param schedp;
+         memset(&schedp, 0, sizeof(schedp));
+         schedp.sched_priority = REMUX_THREAD_PRIO;
+         if (pthread_setschedparam(oTSRemuxThread, SCHED_OTHER, &schedp) != 0)
+            dprintf("pthread_setschedparam failed");
 		}
 		
 		if(pthread_create(&oPlayerThread, 0, mp_playStream, (void *)sArgument) != 0)
@@ -3009,7 +3007,13 @@ extern "C" {
 		}
 		else
 		{
-			dprintf("Successfully created player thread\n");
+		   dprintf("Successfully created player thread\n");
+		   
+		   struct sched_param schedp;
+         memset(&schedp, 0, sizeof(schedp));
+         schedp.sched_priority = PLAY_THREAD_PRIO;
+         if (pthread_setschedparam(oPlayerThread, SCHED_OTHER, &schedp) != 0)
+            dprintf("pthread_setschedparam failed");
 		}	
 
 		g_Controld      = new CControldClient;
