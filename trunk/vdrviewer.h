@@ -56,7 +56,7 @@ extern int endianTest;
 
 #define MAX_ENCODINGS 10
 
-#define dprintf(fmt, args...) {if(debug) printf( "[vncv] " fmt, ## args);}
+#define dprintf(fmt, args...) {if(debug) printf( "[vdrv] " fmt, ## args);}
 
 /* args.c */
 

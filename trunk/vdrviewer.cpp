@@ -53,6 +53,78 @@ extern "C" {
 #include "viewermenu.h"
 #include "datasocket.h"
 
+
+#define ADAP      "/dev/dvb/adapter0"
+#define ADEC ADAP "/audio0"
+#define VDEC ADAP "/video0"
+#define DMX  ADAP "/demux0"
+#define DVR  ADAP "/dvr0"
+
+
+#define TS_PACKET_SIZE 188
+#define PF_BUF_SIZE   (240 * TS_PACKET_SIZE)
+#define RINGBUFFERSIZE (PF_BUF_SIZE*70)
+#define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
+#define IPACKS		2048
+// original timeout: #define PF_RD_TIMEOUT 3000
+#define PF_RD_TIMEOUT 5000
+#define PF_EMPTY      0
+#define PF_READY      1
+#define PF_LST_ITEMS  30
+#define PF_SKPOS_OFFS MINUTEOFFSET
+#define PF_JMP_DIV    4
+#define PF_JMP_START  0
+#define PF_JMP_MID    5555
+#define PF_JMP_END    9999
+
+#define CLIENTCONTROL_THREAD_PRIO 0
+#define RECIVE_THREAD_PRIO 50
+#define REMUX_THREAD_PRIO 0
+#define PLAY_THREAD_PRIO 100
+
+typedef unsigned char uchar;
+
+struct TSData
+{
+    char packNr;
+    char packsCount;
+    char tsHeaderCRC;
+    char data[UDP_PACKET_SIZE];
+};               
+
+enum e_playstate {eBufferRefill=0,eBufferRefillAll,eBufferReset,eInBufferReset,eOutBufferReset,ePlayInit,ePlay,ePause};
+
+
+enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq };
+
+struct SClientControl
+{
+   char pakType;
+   char dataLen;
+   char data[0];
+};
+
+struct SClientControlInfo
+{
+   char clientName[20];
+};
+
+struct SClientControlPlayState
+{
+   char PlayMode;
+   bool Play;
+   bool Forward;
+   char Speed;
+};
+
+enum ePlayMode { pmNone,           // audio/video from decoder
+                 pmAudioVideo,     // audio/video from player
+                 pmAudioOnly,      // audio only from player, video from decoder
+                 pmAudioOnlyBlack, // audio only from player, no video (black screen)
+                 pmVideoOnly,      // video only from player, audio from decoder
+                 pmExtern_THIS_SHOULD_BE_AVOIDED
+               };
+
 // LCD
 typedef unsigned char screen_t[LCD_BUFFER_SIZE];
 #define LCD "/dev/dbox/lcd0"
@@ -60,7 +132,8 @@ typedef unsigned char screen_t[LCD_BUFFER_SIZE];
 #define FILLED 4
 int lcd;
 cDataSocket *m_pLCDSocket    = NULL;
-cDataSocket *m_pStreamSocket = NULL;
+cDataSocket *m_pStreamSocket    = NULL;
+cDataSocket *m_pClientControlSocket = NULL;
 screen_t screen, glcd_screen;
 
 
@@ -92,7 +165,8 @@ int fnc_old, saa_old, avs, saa;
 fbvnc_framebuffer_t global_framebuffer;
 int fb_fd;
 int rc_fd;
-unsigned int bytes_read=0;
+unsigned int g_iBytesReadPES=0;
+unsigned int g_iBytesReadTS=0;
 int g_iScreenMode=0, g_iScreenModeOld;
 double g_dDataRate=0, g_dDataRateOld=0;
 #ifdef HAVE_DREAMBOX_HARDWARE
@@ -105,6 +179,7 @@ int gScale,sx,sy,ex,ey;
 int usepointer = 0;
 bool bResync = false;
 int lcd_port;
+int ccontrol_port;
 int ts_port;
 int g_iIsAC3=-1, g_iIsAC3Old=-1;
 int auto_aspratio;
@@ -203,38 +278,7 @@ void setMoreTransparency( bool bDo )
 #endif
 
 
-
-
-
-#define ADAP      "/dev/dvb/adapter0"
-#define ADEC ADAP "/audio0"
-#define VDEC ADAP "/video0"
-#define DMX  ADAP "/demux0"
-#define DVR  ADAP "/dvr0"
-
-
-#define TS_PACKET_SIZE 188
-#define PF_BUF_SIZE   (210 * TS_PACKET_SIZE)
-#define RINGBUFFERSIZE (PF_BUF_SIZE*90)
-#define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
-#define IPACKS		2048
-// original timeout: #define PF_RD_TIMEOUT 3000
-#define PF_RD_TIMEOUT 5000
-#define PF_EMPTY      0
-#define PF_READY      1
-#define PF_LST_ITEMS  30
-#define PF_SKPOS_OFFS MINUTEOFFSET
-#define PF_JMP_DIV    4
-#define PF_JMP_START  0
-#define PF_JMP_MID    5555
-#define PF_JMP_END    9999
-
-#define RECIVE_THREAD_PRIO 50
-#define REMUX_THREAD_PRIO 0
-#define PLAY_THREAD_PRIO 100
-
-
-
+pthread_t oClientControlThread;
 pthread_t oTSReceiverThread;
 pthread_t oTSRemuxThread;
 pthread_t oPlayerThread;
@@ -258,19 +302,6 @@ struct SCpuStat
    unsigned int user, nice, system, idle;
 };
    
-
-typedef unsigned char uchar;
-
-struct TSData
-{
-    char packNr;
-    char packsCount;
-    char tsHeaderCRC;
-    char data[UDP_PACKET_SIZE];
-};
-
-enum e_playstate {eBufferRefill=0,eBufferRefillAll,ePlayInit,ePlay,ePause};
-
 
 //-- main player context --
 //-------------------------
@@ -458,6 +489,7 @@ void *updateLCD(void *sArgument)
 	SCpuStat stat;
 	static SCpuStat oldStat;
 	unsigned int cpuIdle, cpu;
+	double dDataRateTS;
 	
 	g_bGraphLcd = false;
 	
@@ -476,15 +508,17 @@ void *updateLCD(void *sArgument)
 	LCDInfo("Init", true); // for GraphLCD-Status
 	
 	gettimeofday(&oldtime, NULL);
-	bytes_read = 0;
+	g_iBytesReadPES = 0;
+	g_iBytesReadTS = 0;
 	
 	while (!terminate)
 	{
 	   gettimeofday(&curtime, NULL);
-      if (curtime.tv_sec - oldtime.tv_sec > 3)
+      if (curtime.tv_sec - oldtime.tv_sec > 1)
       {
          secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;     
-         g_dDataRate = bytes_read / secs * 8 / 1024 / 1024;
+         g_dDataRate = g_iBytesReadPES / secs * 8 / 1024 / 1024;
+         dDataRateTS = g_iBytesReadTS / secs * 8 / 1024 / 1024;
          g_iInSpace = ringbuffer_read_space(ringbuf_in);
          g_iOutSpace = ringbuffer_read_space(ringbuf_out);
          if ((file = fopen("/proc/stat", "r")) > 0)
@@ -498,9 +532,10 @@ void *updateLCD(void *sArgument)
             g_cpuUse = (cpu - cpuIdle) * 100 / cpu;
             oldStat = stat;
          }
-         dprintf("Info: Rate %2.4f MBits/s, IN-Buff fill %d %% OUT-Buff fill %d%%, CPU %2.1f%%\n", g_dDataRate, (int)(g_iInSpace*100/ringbuf_in->size), (int)(g_iOutSpace*100/ringbuf_out->size), g_cpuUse);
+         dprintf("Info: Recive-Rate(PES) %2.2f MBits/s, Play-Rate(TS) %2.2f MBits/s,\n             IN-Buffer fill %d%%, OUT-Buffer fill %d%%, CPU %2.0f%%\n", g_dDataRate, dDataRateTS, (int)(g_iInSpace*100/ringbuf_in->size), (int)(g_iOutSpace*100/ringbuf_out->size), g_cpuUse);
          oldtime = curtime;
-         bytes_read = 0;
+         g_iBytesReadPES = 0;
+         g_iBytesReadTS = 0;
          LCDInfo("", true);
       }
       
@@ -539,6 +574,13 @@ void *updateLCD(void *sArgument)
    	{
    	   sleep(1);
    	}
+	}
+	
+	if (m_pLCDSocket != NULL)
+	{
+      m_pLCDSocket->Close();
+      delete m_pLCDSocket;
+		m_pLCDSocket = NULL;
 	}
 
   	dprintf("LCD: Thread beendet\n");
@@ -718,6 +760,32 @@ static void mp_unfreezeAV(MP_CTX *ctx)
   }
 }
 
+static int videoSlowMotion(MP_CTX *ctx, int nframes)
+{
+   int ans;
+   
+   if ( (ans = ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 0) < 0))
+   {
+      perror("Error set Devcice AUDIO SET AV SYNC: ");
+      return -1;
+   }
+
+   if ( (ans = ioctl(ctx->adec, AUDIO_SET_MUTE, 1) < 0))
+   {
+      perror("Error set Devcice AUDIO SET MUTE: ");
+      return -1;
+   }
+
+   if ( (ans = ioctl(ctx->vdec, VIDEO_SLOWMOTION, nframes) < 0))
+   {
+      dprintf("Error set Devcice VIDEO SLOWMOTION");
+      return -1;
+   }
+   
+   return 0;
+}
+
+
 // checks if AR has changed an sets cropping mode accordingly (only video mode auto)
 void checkAspectRatio (int vdec, bool init)
 {
@@ -774,44 +842,33 @@ void checkAspectRatio (int vdec, bool init)
 
 void cleanup_threads()
 {
-	// Dadurch wird der LCD-Thread geschlossen, da er bei m_pLCDSocket->Get()
-	// auf eine Antwort vom Server wartet
+   if (m_pStreamSocket != NULL)
+	   m_pStreamSocket->Shutdown(0);
+	
+	if (m_pClientControlSocket != NULL)
+	   m_pClientControlSocket->Shutdown(0);
+	
 	if (m_pLCDSocket != NULL)
-	{
-		dprintf("closing LCD-Socket\n");
-        	m_pLCDSocket->Shutdown(0);
-        	m_pLCDSocket->Close();
-        	delete m_pLCDSocket;
-		m_pLCDSocket = NULL;
-	}
-	
-	if (m_pStreamSocket != NULL)
-	{
-	    dprintf("closing Stream-Socket\n");
-	    m_pStreamSocket->Close();
-	    delete m_pStreamSocket;
-	    m_pStreamSocket = NULL;
-	}
-	
-	
-        printf("Closing Threads!\n");
-        pthread_join(oLCDThread, NULL);
-        pthread_join(oPlayerThread, NULL); // Player first
-        pthread_join(oTSRemuxThread, NULL); 
-        pthread_join(oTSReceiverThread, NULL); 
-        // Clear Ringbuffer
+	   m_pLCDSocket->Shutdown(0);
+   
+   dprintf("terminate Threads!\n");
+   pthread_join(oLCDThread, NULL);
+   pthread_join(oPlayerThread, NULL); // Player first
+   pthread_join(oTSRemuxThread, NULL); 
+   pthread_join(oTSReceiverThread, NULL); 
+   pthread_join(oClientControlThread, NULL); 
+ 
+   // Clear Ringbuffer
    ringbuffer_free(ringbuf_out);
 	ringbuffer_free(ringbuf_in);
 	dprintf("All Threads closed!\n");
 	
-	usleep(150000);
-
 	mp_closeDVBDevices(ctx);
 	ctx = NULL;
-	usleep(500000);
+	//usleep(500000);
 
-        // Resume zapit
-        dprintf("Waking up Zapit\n");
+   // Resume zapit
+   dprintf("Waking up Zapit\n");
         
 	g_Zapit = new CZapitClient;
 	g_Sectionsd = new CSectionsdClient;
@@ -819,10 +876,10 @@ void cleanup_threads()
 	g_Sectionsd->setPauseScanning(false);
 	g_Sectionsd->setPauseSorting(false);
 	delete g_Sectionsd;
-        delete g_Zapit;
+   delete g_Zapit;
        
 //        system("/bin/pzapit -lsb");
-        usleep(150000);
+   //usleep(150000);
 
 // Pacemaker's stuff End
 }
@@ -837,23 +894,151 @@ void cleanup_and_exit(char *msg, int ret)
 	fcntl(rc_fd, F_SETFL, O_NONBLOCK);
 	fcntl(lcd, F_SETFL, O_NONBLOCK);
 	ioctl(lcd,LCD_IOCTL_CLEAR);
-	
-        cleanup_threads();
-	dprintf("Error:%s\n",msg);
+   cleanup_threads();
 	if(ret==EXIT_SYSERROR)
 	{
-		if(msg) perror(msg);
-		else perror("error");
+		if(msg) 
+		   dprintf("Error: %s\n",msg)
+		else 
+		   dprintf("Error\n");
 	}
 	else
 	{
-		if(msg) fprintf(stderr, "%s\n", msg);
+		if(msg) 
+		   dprintf("Message: %s\n",msg);
 	}
 	fbvnc_close();
 	list_destroy(global_framebuffer.overlays);
 	list_destroy(sched);
 }
 
+
+bool SendClientInfo(void)
+{
+   SClientControl data;
+   SClientControlInfo info;
+   ssize_t ret;
+   
+   if (m_pClientControlSocket)
+   {
+      strcpy(info.clientName, "dbox2");
+      data.pakType = ptInfo;
+      data.dataLen = sizeof(info);
+
+      ret = m_pClientControlSocket->Put((char*)&data, sizeof(data));
+      if (ret > 0)
+         ret = m_pClientControlSocket->Put((char*)&info, sizeof(info));
+         
+      if (ret > 0)
+      {
+         return true;
+      }
+      else
+      {
+         dprintf("SendClientInfo: can't send\n");
+         return false;
+      }   
+   }
+   else
+   {
+      dprintf("SendClientInfo: not connected\n");
+      return false;
+   }
+}
+
+bool SendPlayStateReq(void)
+{
+   SClientControl data;
+   ssize_t ret;
+   
+   if (m_pClientControlSocket)
+   {
+      data.pakType = ptPlayStateReq;
+      data.dataLen = 0;
+
+      ret = m_pClientControlSocket->Put((char*)&data, sizeof(data));
+      if (ret > 0)
+      {
+         dprintf("SendPlayStateReq: OK\n");
+         return true;
+      }
+      else
+      {
+         dprintf("SendPlayStateReq: can't send\n");
+         return false;
+      }   
+   }
+   else
+   {
+      dprintf("SendPlayStateReq: not connected\n");
+      return false;
+   }
+}
+
+
+void *mp_ClientControl(void *sArgument)
+{
+   int rd;
+   SClientControl data;
+   SClientControlPlayState state;
+   
+   dprintf("ClientControlThread gestartet, Server: %s\n", hostname);
+   
+   m_pClientControlSocket = new cDataSocketTCP(hostname, ccontrol_port);
+   
+   if ( !m_pClientControlSocket->Open() )
+   {
+      dprintf("ClientControl: Cannot Connect!\n");
+   }
+   else 
+   {
+      dprintf("ClientControl: Connected\n");
+      
+      SendClientInfo();
+      
+      while( !terminate )
+      {
+         dprintf("-1-\n");
+         if ((rd = (int)m_pClientControlSocket->Get((char*)&data, sizeof(data), PF_RD_TIMEOUT)) == sizeof(data))
+         {
+            switch (data.pakType)
+            {
+            case ptPlayState:
+               if ((rd = (int)m_pClientControlSocket->Get((char*)&state, data.dataLen, PF_RD_TIMEOUT)) == data.dataLen)
+               {
+                  dprintf("-2- %d %d\n", data.pakType, data.dataLen);
+                  if (state.PlayMode == pmNone)
+                  {
+                     dprintf("-4-\n");
+                     ctx->playstate = eBufferReset;
+                  }
+                  else
+                  {
+                     dprintf("-5-\n");
+                     //videoSlowMotion(ctx, 2);
+                  } 
+                  dprintf("-6-\n");
+               }
+               break;
+               
+            default:
+               dprintf("unknown Packettype %d\n", data.pakType);
+               break;
+            }
+         }
+      }
+   }
+   
+   if (m_pClientControlSocket != NULL)
+	{
+      m_pClientControlSocket->Close();
+      delete m_pClientControlSocket;
+		m_pClientControlSocket = NULL;
+	}
+       
+   dprintf("ClientControlThread beendet\n");
+   pthread_exit(NULL);
+}
 
 void *mp_ReceiveStream(void *sArgument)
 {
@@ -880,7 +1065,16 @@ void *mp_ReceiveStream(void *sArgument)
    
    while( !terminate )
    {
-      iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
+      if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset))
+		{
+		   if (ctx->playstate == eBufferReset)
+		      ctx->playstate = eInBufferReset;
+		   m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, 100); // Socket-Buffer leeren
+		   usleep(10000);
+		   continue;
+		}
+	
+	   iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
       if ( PF_BUF_SIZE > iPlaceToWrite )
       {
          if (count > 100)
@@ -920,7 +1114,7 @@ void *mp_ReceiveStream(void *sArgument)
             if (ctx->playstate == ePause)
                ctx->playstate = ePlayInit;
             
-            bytes_read += rd;
+            g_iBytesReadPES += rd;
             noDataCount = 0;
          }
          else
@@ -941,12 +1135,12 @@ void *mp_ReceiveStream(void *sArgument)
    }
    
    if (m_pStreamSocket != NULL)
-   {
+	{
       m_pStreamSocket->Close();
       delete m_pStreamSocket;
-      m_pStreamSocket = NULL;
-   }
-   
+		m_pStreamSocket = NULL;
+	}
+     
    dprintf("Receiver: Thread beendet\n");
    pthread_exit(NULL);
 }
@@ -971,6 +1165,20 @@ void *mp_RemuxStream(void *sArgument)
 	
 	while( terminate == 0 )
 	{
+	   if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset) || 
+	       (ctx->playstate == eOutBufferReset))
+		{
+		   if (ctx->playstate == eInBufferReset)
+		   {
+		      ringbuffer_reset(ringbuf_in);
+		      ctx->playstate = eOutBufferReset;
+		      SendPlayStateReq();
+		   }
+		   
+		   usleep(100000);
+		   continue;
+		} 
+		
 	   if (1)
       {        
    		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 6);
@@ -1117,8 +1325,6 @@ void *mp_playStream(void *sArgument)
 
 	dprintf("Starte Player-Loop\n");
 
-//   int tsfd = open("/mnt/video/mein.ts", O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0664);
-
    if (!mp_openDVBDevices(ctx))
 	{
 		LCDInfo("DVB ERR   ");
@@ -1128,6 +1334,25 @@ void *mp_playStream(void *sArgument)
 
 	while( terminate == 0 )
 	{
+	   if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset) || 
+	       (ctx->playstate == eOutBufferReset))
+		{
+		   if (gDeviceState != DVB_DEVICES_STOPPED)
+		   {
+		      usleep(600000);
+		      mp_stopDVBDevices(ctx);
+		   }
+		   
+		   if (ctx->playstate == eOutBufferReset)
+		   {
+		      ringbuffer_reset(ringbuf_out);
+		      ctx->playstate = eBufferRefill;
+		   }
+		      
+		   usleep(100000);
+		   continue;
+		} 
+		
 		if (ctx->playstate == ePause)
 		{
 			
@@ -1188,16 +1413,15 @@ void *mp_playStream(void *sArgument)
 				dvbreset = false;
 			}
 			
-			ctx->playstate = ePlayInit;
+			if ( ctx->playstate == eBufferRefill || ctx->playstate == eBufferRefillAll) 
+			   ctx->playstate = ePlayInit;
 			
 			continue;
 		} 
      
       rd = ringbuffer_get_readpointer(ringbuf_out, &(ctx->dvrBuf), ctx->readSize);
-      usleep(1000);
+      g_iBytesReadTS += rd;
       
-//		write(tsfd, ctx->dvrBuf, ctx->readSize);
-
 		
 		//dprintf("Puffergroesse: %d, Gelesene Bytes: %d\n",rSize, rd);
 		
@@ -1278,7 +1502,7 @@ void *mp_playStream(void *sArgument)
 		   gettimeofday(&oldtime, NULL);
 		   datacounter = 0;
 		}
-		while (rd > 0)
+		while ((rd > 0) && (!terminate))
 		{
 			wr = write(ctx->dvr, ctx->dvrBuf + done, rd);
 			if (wr < 0)
@@ -1322,7 +1546,7 @@ void *mp_playStream(void *sArgument)
 			freezed = false;
 		}
 	}
-//   close(tsfd);
+	
 	mp_stopDVBDevices(ctx);
 	sleep(2);
 
@@ -2833,6 +3057,7 @@ extern "C" {
 		char szVNCPort[20];
 		char szLCDPort[20];
 		char szTSPort[20];
+		char szCControlPort[20];
 		char szScale[20];
 		char szServerScale[20];
 		char szPasswd[20];
@@ -2861,6 +3086,7 @@ extern "C" {
 		
 		sprintf(szVNCPort     ,"osdport%s",szServerNr);
 		sprintf(szTSPort      ,"streamingport%s",szServerNr);
+		sprintf(szCControlPort ,"clientcontrolport%s",szServerNr);
 		sprintf(szLCDPort     ,"lcdport%s",szServerNr);
 		sprintf(szAutAspRatio ,"autoaspectratio%s",szServerNr);
 		sprintf(szUseLirc     ,"lirc%s",szServerNr);
@@ -2912,6 +3138,7 @@ extern "C" {
 		int vnc_port=config.getInt32(szVNCPort,20001);
 		ts_port=config.getInt32(szTSPort,20002);
 		lcd_port=config.getInt32(szLCDPort,20003);
+		ccontrol_port=config.getInt32(szCControlPort,20005);
 		use_lirc=config.getInt32(szUseLirc,0);
 		gScale=config.getInt32(szScale,1);
 		auto_aspratio=config.getInt32(szAutAspRatio,0);
@@ -2924,7 +3151,7 @@ extern "C" {
 		g_iScreenMode = config.getInt32("screenmode",0);
 #endif
 
-		dprintf("Server %s osdport: %d tsport %d lcdport %d\n", hostname, vnc_port, ts_port, lcd_port);
+		dprintf("Server %s osdport: %d, tsport: %d, lcdport: %d, controlport %d\n", hostname, vnc_port, ts_port, lcd_port, ccontrol_port);
 		
 		if(gScale > 4 || gScale < 1)
 			gScale=1;
@@ -2961,14 +3188,20 @@ extern "C" {
 
 		ringbuf_in = ringbuffer_create(RINGBUFFERSIZE);
 		ringbuf_out = ringbuffer_create(RINGBUFFERSIZE);
-
-		if(pthread_create(&oLCDThread, 0, updateLCD, (void *)sArgument) != 0)
+		
+		if(pthread_create(&oClientControlThread, 0, mp_ClientControl, (void *)sArgument) != 0)
 		{
-			dprintf("Couldn't create LCD thread\n");
+			dprintf("Couldn't create oClientControlThread\n");
 		}
 		else
 		{
-			dprintf("Successfully created LCD thread\n");
+			dprintf("Successfully created oClientControlThread\n");
+			
+		   struct sched_param schedp;
+         memset(&schedp, 0, sizeof(schedp));
+         schedp.sched_priority = CLIENTCONTROL_THREAD_PRIO;
+         if (pthread_setschedparam(oClientControlThread, SCHED_OTHER, &schedp) != 0)
+            dprintf("pthread_setschedparam failed");
 		}
 		
 		if(pthread_create(&oTSReceiverThread, 0, mp_ReceiveStream, (void *)sArgument) != 0)
@@ -3014,6 +3247,15 @@ extern "C" {
          schedp.sched_priority = PLAY_THREAD_PRIO;
          if (pthread_setschedparam(oPlayerThread, SCHED_OTHER, &schedp) != 0)
             dprintf("pthread_setschedparam failed");
+		}
+		
+		if(pthread_create(&oLCDThread, 0, updateLCD, (void *)sArgument) != 0)
+		{
+			dprintf("Couldn't create LCD thread\n");
+		}
+		else
+		{
+			dprintf("Successfully created LCD thread\n");
 		}	
 
 		g_Controld      = new CControldClient;

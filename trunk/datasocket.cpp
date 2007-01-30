@@ -113,6 +113,33 @@ ssize_t cDataSocketTCP::Get(char *buf, size_t count, int tio)
 }
 
 
+ssize_t cDataSocketTCP::Put(char *buf, size_t count, int tio)
+{
+   if (tio > 0)
+   {
+      ssize_t n, nleft = count;
+      
+      while( (nleft>0) && (poll(&m_pHandle, 1, tio) > 0) && (m_pHandle.events & m_pHandle.revents) && !m_Terminate )
+      {
+         n = write(m_pHandle.fd, buf, nleft);
+         if (n<0) 
+         {
+            if (errno != EAGAIN) 
+            return -1;
+         }
+         nleft -= n;
+         buf   += n;
+      }
+      
+      return(count-nleft);
+   }
+   else
+   {
+      return send(m_pHandle.fd, buf, count, 0);
+   }
+}
+
+
 cDataSocketUDP::cDataSocketUDP(char *address, unsigned short  port)
 	         :cDataSocket(address, port)
 {
@@ -193,20 +220,23 @@ ssize_t cDataSocketUDP::Get(char *buf, size_t count, int tio)
 
     return(count-nleft);
 }
-/*
-ssize_t cDataSocketUDP::Put(char *buf, size_t count)
+
+
+ssize_t cDataSocketUDP::Put(char *buf, size_t count, int tio)
 {
-    ssize_t n, nleft = count;
-
-    n = sendto(m_pHandle.fd, buf, nleft, 0, NULL, NULL);
-        if (n<0) 
-        {
-            if (errno != EAGAIN) 
-    	    return -1;
-        }
-        nleft -= n;
-        buf   += n;
-    }
-
-    return(count-nleft);
-}*/
+   ssize_t n, nleft = count;
+   
+   while( (nleft>0) && (poll(&m_pHandle, 1, tio) > 0) && (m_pHandle.events & m_pHandle.revents) && !m_Terminate )
+   {
+      n = sendto(m_pHandle.fd, buf, nleft, 0, NULL, NULL);
+      if (n<0) 
+      {
+         if (errno != EAGAIN) 
+         return -1;
+      }
+      nleft -= n;
+      buf   += n;
+   }
+   
+   return(count-nleft);
+}

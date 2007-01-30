@@ -18,6 +18,7 @@ public:
     virtual void Close();
     virtual void Shutdown(int how);
     virtual ssize_t Get(char *buf, size_t count, int tio = 0) = 0;
+    virtual ssize_t Put(char *buf, size_t count, int tio = 0) = 0;
     virtual bool IsOpen() { return m_pHandle.fd != -1; };
 
 protected:
@@ -34,7 +35,8 @@ public:
     cDataSocketTCP(char *address, unsigned short port);
     virtual ~cDataSocketTCP();
     virtual bool Open();
-    virtual ssize_t cDataSocketTCP::Get(char *buf, size_t count, int tio = 0);
+    virtual ssize_t Get(char *buf, size_t count, int tio = 0);
+    virtual ssize_t Put(char *buf, size_t count, int tio = 0);
 
 private:
 };
@@ -46,7 +48,8 @@ public:
     cDataSocketUDP(char *address, unsigned short  port);
     virtual ~cDataSocketUDP();
     virtual bool Open();
-    virtual ssize_t cDataSocketUDP::Get(char *buf, size_t count, int tio = 0);
+    virtual ssize_t Get(char *buf, size_t count, int tio = 0);
+    virtual ssize_t Put(char *buf, size_t count, int tio = 0);
 
 private:
 };
