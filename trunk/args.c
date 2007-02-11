@@ -30,7 +30,8 @@
 
 char *programName;
 
-char hostname[256];
+char hostname[20];
+char servermacadress[20];
 int port;
 
 Bool listenSpecified = False;

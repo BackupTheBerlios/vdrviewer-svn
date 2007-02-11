@@ -49,8 +49,6 @@ rfbServerInitMsg si;
 struct timeval updateRequestTime;
 Bool sendUpdateRequest;
 
-int endianTest = 1;
-
 
 /* note that the CoRRE encoding uses this buffer and assumes it is big enough
 	to hold 255 * 255 * 32 bits -> 260100 bytes.  640*480 = 307200 bytes */

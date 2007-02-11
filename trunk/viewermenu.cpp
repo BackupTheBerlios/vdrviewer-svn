@@ -725,39 +725,79 @@ EMenuValue cMenu::Show(int rc_fd)
 
 
 //************************************************************************************************
+// 	DrawMsgBox()
+//************************************************************************************************
+void cMenu::DrawMsgBox(char* header, char* question, bool okBtn, bool homeBtn, bool drawAll)
+{
+   IMPORT_FRAMEBUFFER_VARS;
+   if (drawAll)
+   {
+      STORE_PALETTE(&colormap);
+      RenderBox(0, 0, p_xsize, p_ysize, FILL, TRANSP);
+   }
+   
+   int Width = 530;
+   int Height = 142;
+   int Left = p_xsize / 2 - Width / 2;
+   int Top = p_ysize / 2 - Height / 2;
+
+   if (drawAll)
+   {
+      RenderBox(Left, Top, Left+Width, Top+Height, FILL, SKIN3);
+      RenderBox(Left, Top+42, Left+Width, Top+Height, FILL, SKIN3);
+      RenderBox(Left+2, Top+2, Left+Width-2, Top+42-1, FILL, SKIN1);
+      RenderBox(Left+2, Top+42+1, Left+Width-2, Top+Height-2, FILL, SKIN2);
+      
+      
+      RenderString(header, Left+2, Top+6, Width-2, CENTER, YELLOW, SKIN1);
+   }
+   RenderString(question, Left+2, Top+42+6, Width-2, CENTER, WHITE, SKIN2);
+   
+   if (drawAll)
+   {
+      if (okBtn)
+      {
+         RenderBox(Left+70, Top+Height-42, Left+70+70, Top+Height-12, FILL, SKIN3);
+         RenderString("OK", Left+70, Top+Height-42, 70, CENTER, WHITE, SKIN3);
+      }
+      
+      if (homeBtn)
+      {
+         RenderBox(Left+Width-70-70, Top+Height-42, Left+Width-70, Top+Height-12, FILL, SKIN3);
+         RenderString("HOME", Left+Width-70-70, Top+Height-42, 70, CENTER, WHITE, SKIN3);
+      }
+   }
+}
+
+//************************************************************************************************
+// 	ClearOSD()
+//************************************************************************************************
+void cMenu::ClearOSD()
+{
+   IMPORT_FRAMEBUFFER_VARS;
+   RenderBox(0, 0, p_xsize, p_ysize, FILL, TRANSP);
+   STORE_PALETTE(NULL);
+}
+
+//************************************************************************************************
 // 	MsgBox()
 //************************************************************************************************
-void cMenu::MsgBox(int rc_fd, char* header, char* question)
+bool cMenu::MsgBox(int rc_fd, char* header, char* question)
 {
+   DrawMsgBox(header, question);
 
-    RenderBox(155, 178, 464, 220, FILL, SKIN1);
-    RenderBox(155, 220, 464, 327, FILL, SKIN2);
-    RenderBox(155, 178, 464, 327, GRID, SKIN3);
-    RenderBox(155, 220, 464, 327, GRID, SKIN3);
-
-    RenderString(header, 157, 213, 306, CENTER, YELLOW, SKIN1);
-    RenderString(question, 157, 265, 306, CENTER, WHITE, SKIN1);
-  
-    RenderBox(235, 286, 284, 310, FILL, SKIN3);
-    RenderString("OK", 237, 305, 46, CENTER, WHITE, SKIN3);
-    RenderBox(335, 286, 384, 310, FILL, SKIN3);
-    RenderString("EXIT", 337, 305, 46, CENTER, WHITE, SKIN3);
-
-//    REDRAWBOX(0, 0, 700, 450);
-  
-    ShowOsd(True);
+   int rccode = 0;
+   while((rccode != RC_OK) && (rccode != RC_HOME))
+   {
+      cMenu::GetRCCode(rc_fd, rccode);
+   }
+   
+   ClearOSD();
     
-    int rccode;
-    while( 1 )
-    {
-	cMenu::GetRCCode(rc_fd, rccode);
-	if(( rccode == RC_OK ) || ( rccode == RC_HOME))
-	{
-	    break;
-	}
-    }
-    
-    ShowOsd(False);
+   if ( rccode == RC_OK ) 
+      return true;
+   
+   return false;
 }
 
 //************************************************************************************************
@@ -765,56 +805,56 @@ void cMenu::MsgBox(int rc_fd, char* header, char* question)
 //************************************************************************************************
 bool cMenu::PowerButtonMenu(int rc_fd, fbvnc_event_t *ev)
 {
-    while (1)
-    {
-	cMenu Menu("VDR-Viewer Menü");
-	Menu.Add(new cMenuSelItem("VDR-Viewer schließen", eMVViewerClose));
-	Menu.Add(new cMenuSelItem("VDR ausschalten", eMVVdrShutdown));
-	Menu.Add(new cMenuSeparatorItem());
-	Menu.Add(new cMenuSelItem("Stream synchronisieren", eMVResync));
-	Menu.Add(new cMenuSelItem("LCD umschalten", eMVToggleLCD));
-	//Menu.Add(new cMenuSeparatorItem());
-	//Menu.Add(new cMenuSelItem("Einstellungen", eMVSettings));
-	EMenuValue RetVal = Menu.Show(rc_fd);
-    
-	dprintf("[vncv] MenuRet: %d\n", RetVal);
-	switch(RetVal)
-	{
-	case eMVViewerClose: // Close VDR-Viewer
-    	    ev->evtype = FBVNC_EVENT_QUIT;
-    	    return false;
-    	    break;
-		
-	case eMVVdrShutdown: // Send Key to VDR
-	    ev->evtype = FBVNC_EVENT_NULL;
-	    return false;
-	    break;
-	    
-	case eMVResync: // Resync Stream
-	    Resync();
-	    ev->evtype = FBVNC_EVENT_NULL;
-	    return true;
-    	    break;
-
-	case eMVToggleLCD: // Toggle LCD
-	    ToggleLCD();
-	    ev->evtype = FBVNC_EVENT_NULL;
-	    return true;
-    	    break;
-
-	case eMVSettings: // Show Settings Menu
-	    SettingsMenu(rc_fd);
-    	    break;
-	    
-	default:
-    	    ev->evtype = FBVNC_EVENT_NULL;
-    	    return true;
-    	    break;
-	}
-    }
-    
-    ev->evtype = FBVNC_EVENT_NULL;
-    return false;
+   while (1)
+   {
+      cMenu Menu("VDR-Viewer Menü");
+      Menu.Add(new cMenuSelItem("VDR-Viewer schließen", eMVViewerClose));
+      Menu.Add(new cMenuSelItem("VDR ausschalten", eMVVdrShutdown));
+      Menu.Add(new cMenuSeparatorItem());
+      Menu.Add(new cMenuSelItem("Stream synchronisieren", eMVResync));
+      Menu.Add(new cMenuSelItem("LCD umschalten", eMVToggleLCD));
+      //Menu.Add(new cMenuSeparatorItem());
+      //Menu.Add(new cMenuSelItem("Einstellungen", eMVSettings));
+      EMenuValue RetVal = Menu.Show(rc_fd);
+      
+      dprintf("[vncv] MenuRet: %d\n", RetVal);
+      switch(RetVal)
+      {
+      case eMVViewerClose: // Close VDR-Viewer
+         ev->evtype = FBVNC_EVENT_QUIT;
+         return false;
+         break;
+         
+      case eMVVdrShutdown: // Send Key to VDR
+         ev->evtype = FBVNC_EVENT_NULL;
+         return false;
+         break;
+         
+      case eMVResync: // Resync Stream
+         Resync();
+         ev->evtype = FBVNC_EVENT_NULL;
+         return true;
+         break;
+         
+      case eMVToggleLCD: // Toggle LCD
+         ToggleLCD();
+         ev->evtype = FBVNC_EVENT_NULL;
+         return true;
+         break;
+         
+      case eMVSettings: // Show Settings Menu
+         SettingsMenu(rc_fd);
+         break;
+         
+      default:
+         ev->evtype = FBVNC_EVENT_NULL;
+         return true;
+         break;
+      }
+   }
+   
+   ev->evtype = FBVNC_EVENT_NULL;
+   return false;
 }
 
 

@@ -45,6 +45,15 @@
 
 extern int endianTest;
 
+#define Swap16(s) \
+    ((endianTest==1) ? ((((s) & 0xff) << 8) | (((s) >> 8) & 0xff)) : (s))
+      
+#define Swap32(l) \
+    ((endianTest==1) ? ((((l) & 0xff000000) >> 24) | \
+			     (((l) & 0x00ff0000) >> 8)  | \
+			     (((l) & 0x0000ff00) << 8)  | \
+			     (((l) & 0x000000ff) << 24))  : (l))
+
 #define Swap16IfLE(s) \
     (*(char *)&endianTest ? ((((s) & 0xff) << 8) | (((s) >> 8) & 0xff)) : (s))
 
@@ -62,6 +71,7 @@ extern int endianTest;
 
 extern char *programName;
 extern char hostname[];
+extern char servermacadress[];
 extern int port;
 extern Bool listenSpecified;
 extern int listenPort, flashPort;
@@ -124,6 +134,7 @@ extern Bool HandleRFBServerMessage();
 extern void ShowOsd(Bool show);
 extern void Resync();
 extern void ToggleLCD();
+extern void WakeupVDR();
 
 
 #ifdef USE_X

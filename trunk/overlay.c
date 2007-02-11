@@ -1328,7 +1328,7 @@ selectServer(char* szServerNr, int rc_fd)
 	    if ( !p ) continue;
 	    *p=0;
 	    p++;
-	    if( !strncmp(line,"server",6) && strncmp(line,"server_scale",11))
+	    if( !strncmp(line,"server",6) && strncmp(line,"server_scale",11) && strncmp(line,"server_mac",10))
 	    {
     		sprintf(szServers[snum],"Server %d : %s",snum+1, p);
     		strcpy(szServerNrs[snum],line+6);

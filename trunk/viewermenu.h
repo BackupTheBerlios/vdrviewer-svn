@@ -118,8 +118,10 @@ public:
     static bool PowerButtonMenu(int rc_fd, fbvnc_event_t *ev);
     static void SettingsMenu(int rc_fd);
 
-    static void MsgBox(int rc_fd, char* header, char* question);
+    static bool MsgBox(int rc_fd, char* header, char* question);
     static bool HandleMenu(int rc_fd, struct input_event iev, fbvnc_event_t *ev);
+    static void DrawMsgBox(char* header, char* question, bool okBtn=true, bool homeBtn=true, bool drawAll=true);
+    static void ClearOSD();
     
 };
 
