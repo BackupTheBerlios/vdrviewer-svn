@@ -62,7 +62,7 @@ extern "C" {
 
 
 #define TS_PACKET_SIZE 188
-#define PLAY_BUF_SIZE   (40 * TS_PACKET_SIZE)
+#define PLAY_BUF_SIZE   (100 * TS_PACKET_SIZE)
 #define PF_BUF_SIZE   (348 * TS_PACKET_SIZE)
 #define RINGBUFFERSIZE (PF_BUF_SIZE*50)
 #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
@@ -98,7 +98,7 @@ struct TSData
 enum e_playstate {eBufferRefill=0,eBufferRefillAll,eBufferReset,eInBufferReset,eOutBufferReset,ePlayInit,ePlay,ePause};
 
 
-enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture };
+enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture, ptFreeze };
 
 struct SClientControl
 {
@@ -144,6 +144,7 @@ cDataSocket *m_pLCDSocket    = NULL;
 cDataSocket *m_pStreamSocket    = NULL;
 cDataSocket *m_pClientControlSocket = NULL;
 screen_t screen, glcd_screen;
+SClientControlPlayState g_PlayState;
 
 
 // Controld
@@ -186,11 +187,11 @@ int blev;
 char terminate=0;
 int gScale,sx,sy,ex,ey;
 int usepointer = 0;
-bool bResync = false;
+bool g_bResync = false;
 int lcd_port;
 int ccontrol_port;
 int ts_port;
-int g_iIsAC3=-1, g_iIsAC3Old=-1;
+int g_iIsAC3=0, g_iIsAC3Old=0;
 int auto_aspratio;
 int use_lirc;
 int g_iInSpace=0, g_iOutSpace=0, g_iInSpaceOld=0, g_iOutSpaceOld=0; 
@@ -523,7 +524,7 @@ void *updateLCD(void *sArgument)
 	while (!terminate)
 	{
 	   gettimeofday(&curtime, NULL);
-      if (curtime.tv_sec - oldtime.tv_sec > 1)
+      if (curtime.tv_sec - oldtime.tv_sec > 2)
       {
          secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;     
          g_dDataRate = g_iBytesReadPES / secs * 8 / 1024 / 1024;
@@ -796,9 +797,9 @@ static int videoSlowMotion(MP_CTX *ctx, int nframes)
 
 static int videoStillPicture(MP_CTX *ctx, uchar *Data, int Length)
 {
+   /*
    struct video_still_picture sp;
    
-   /*
    sp.iFrame = (char *) malloc(Length);
    sp.size = Length;
    printf("StillPicture size: %d\n", Length);
@@ -974,7 +975,7 @@ bool SendClientInfo(void)
    
    if (m_pClientControlSocket)
    {
-      strcpy(info.clientName, "dbox2");
+      strcpy(info.clientName, clientname);
       data.pakType = ptInfo;
       data.dataLen = sizeof(info);
       data.dataLen = Swap32(data.dataLen);
@@ -1035,7 +1036,6 @@ void *mp_ClientControl(void *sArgument)
 {
    int rd;
    SClientControl data;
-   SClientControlPlayState state;
    
    dprintf("ClientControlThread gestartet, Server: %s\n", hostname);
    
@@ -1060,16 +1060,22 @@ void *mp_ClientControl(void *sArgument)
             switch (data.pakType)
             {
             case ptPlayState:
+               SClientControlPlayState state;
                if ((rd = (int)m_pClientControlSocket->Get((char*)&state, data.dataLen, PF_RD_TIMEOUT)) == data.dataLen)
-               {
-                  dprintf("ClientControl: PlayMode: %d\n", state.PlayMode);
-                  if (state.PlayMode == pmNone)
+               {                   
+                  dprintf("ClientControl: PlayMode: %d, Play: %d, Forward: %d, Speed: %d\n", state.PlayMode, state.Play, state.Forward, state.Speed);
+                  if ((g_PlayState.PlayMode != state.PlayMode) || (g_PlayState.Forward != state.Forward))
                   {
+                     memcpy(&g_PlayState, &state, sizeof(state));
                      ctx->playstate = eBufferReset;
                   }
                   else
                   {
-                     //videoSlowMotion(ctx, 2);
+                     if ((g_PlayState.Speed != state.Speed) && (state.Play))
+                        g_bResync = true;
+                       
+                     ctx->playstate = ePlay;
+                     memcpy(&g_PlayState, &state, sizeof(state));
                      SendPlayStateReq();
                   } 
                }
@@ -1092,7 +1098,6 @@ void *mp_ClientControl(void *sArgument)
                      usleep(50000);
                   }
                   usleep(200000);
-                  dprintf("--------------\n");
                   
                   ctx->playstate = ePause;
                }
@@ -1101,6 +1106,10 @@ void *mp_ClientControl(void *sArgument)
                   dprintf("readed data to short %d\n", rd);
                }
                free(picdata.Data);
+               break;
+               
+            case ptFreeze:
+               ctx->playstate = ePause;
                break;
                
             default:
@@ -1130,6 +1139,7 @@ void *mp_ReceiveStream(void *sArgument)
    int noDataCount = 0;
    int iPlaceToWrite;
    int rd;
+   size_t buffer, iInSpace, iOutSpace;
    
    dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
    
@@ -1157,7 +1167,7 @@ void *mp_ReceiveStream(void *sArgument)
 		}
 	
 	   iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
-      if ( PF_BUF_SIZE > iPlaceToWrite )
+      if ( PF_BUF_SIZE > iPlaceToWrite ) 
       {
          if (count > 100)
          {
@@ -1172,6 +1182,21 @@ void *mp_ReceiveStream(void *sArgument)
          usleep(10000);
          count++;
          continue;
+      }
+      
+      if (g_PlayState.Speed > 0)
+      {
+         buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 6);
+
+         iInSpace = ringbuffer_read_space(ringbuf_in);
+         iOutSpace = ringbuffer_read_space(ringbuf_out);
+			if (iInSpace + iOutSpace > buffer)
+			{
+			   if (ctx->playstate == eBufferRefillAll)
+			      ctx->playstate = eBufferRefill;
+			   usleep(10000);
+			   continue;
+		   }
       }
    
       count = 0;
@@ -1193,9 +1218,6 @@ void *mp_ReceiveStream(void *sArgument)
          
          if ( rd > 0)
          {       
-            if (ctx->playstate == ePause)
-               ctx->playstate = ePlayInit;
-            
             g_iBytesReadPES += rd;
             noDataCount = 0;
          }
@@ -1400,6 +1422,7 @@ void *mp_playStream(void *sArgument)
 	size_t iInSpace, iOutSpace, inBuffFill;
 	double outrate, secs;
 	size_t buffer;
+	int iSpeedCnt = 0;
 	
 	//-- install poller --
 	pHandle.fd     = ctx->inFd;
@@ -1459,6 +1482,8 @@ void *mp_playStream(void *sArgument)
 			mp_stopDVBDevices(ctx);
 			if (ctx->playstate == eBufferRefillAll)
 				buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) * 0.95);
+		   else if (g_PlayState.Play)
+		      buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 8);
 			else
 				buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 4);
 
@@ -1513,13 +1538,13 @@ void *mp_playStream(void *sArgument)
 		//
 		// wenn nicht bereits durch Reciever ein Refill initiiert wurde, dann den
 		// Buffer komplett füllen um einen erneuten Buffer-underrun zu vermeiden
-		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize || bResync) )
+		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize || g_bResync) )
 		{
 			dprintf("Datenstrom abgebrochen oder ReSync -> Neuinit!\n");
 			iOutSpace = ringbuffer_read_space(ringbuf_out);
 			dprintf("play: %lus buffer:%d read:%d to_read:%d \n", time(NULL) - play_begun, iOutSpace, rd, ctx->readSize);
 
-			if (bResync)
+			if (g_bResync)
 			{
 				ctx->playstate = eBufferRefill;
 				LCDInfo("Resync    ");
@@ -1554,7 +1579,7 @@ void *mp_playStream(void *sArgument)
 				dvbreset = true;
 			}
 
-			bResync = false;
+			g_bResync = false;
 			
 			continue;
 		}
@@ -1613,19 +1638,48 @@ void *mp_playStream(void *sArgument)
                ringbuffer_reset(ringbuf_out);
             }
    		   dprintf("Autoresync\n");
-   		   bResync = true;
+   		   g_bResync = true;
    		}
    		oldtime = curtime;
 		   datacounter = 0;
       }
 
-   	mp_startDVBDevices(ctx);
-
+      mp_startDVBDevices(ctx);
+      
 		if (freezed)
 		{
 			mp_unfreezeAV(ctx);
 			freezed = false;
 		}
+				
+		if (g_PlayState.Speed > 0)
+      {
+         if (g_PlayState.Play)
+         {
+            if (iSpeedCnt == 20)
+            {    
+               ioctl(ctx->vdec, VIDEO_FREEZE);
+               ioctl(ctx->adec, AUDIO_PAUSE);
+               usleep(g_PlayState.Speed * 100000);
+               ioctl(ctx->vdec, VIDEO_PLAY);
+               ioctl(ctx->adec, AUDIO_PLAY);
+               iSpeedCnt = 0;
+            }
+         }
+         else
+         {
+            if (iSpeedCnt == (10 - g_PlayState.Speed) * 20)
+            {    
+               ioctl(ctx->vdec, VIDEO_FREEZE);
+               ioctl(ctx->adec, AUDIO_PAUSE);
+               usleep(100000);
+               ioctl(ctx->vdec, VIDEO_PLAY);
+               ioctl(ctx->adec, AUDIO_PLAY);
+               iSpeedCnt = 0;
+            }
+         }
+         iSpeedCnt++;
+      }
 	}
 	
 	mp_stopDVBDevices(ctx);
@@ -1638,7 +1692,7 @@ void *mp_playStream(void *sArgument)
 
 void Resync()
 {
-    bResync = True;
+    g_bResync = True;
 }
 
 void ToggleLCD()
@@ -2388,9 +2442,9 @@ dprintf("reading ms_fd\n");
 			dprintf("handled: %d evtype: %d\n", handled, ev->evtype);
 			if (!handled)
 			{
-			   	if (ev->evtype == FBVNC_EVENT_NULL)
-			    	{
-	    				if (iev.code == KEY_VOLUMEUP || iev.code == KEY_VOLUMEDOWN )
+		   	if (ev->evtype == FBVNC_EVENT_NULL)
+		    	{
+    				if (iev.code == KEY_VOLUMEUP || iev.code == KEY_VOLUMEDOWN )
 					{
 						if (iev.value != 0)
 						{
@@ -3222,6 +3276,7 @@ extern "C" {
 		g_iScreenMode = 0;
 		get_fbinfo();
 
+      char szClientName[20];
 		char szServerNr[20] = "";
 		char szServer[20];
 		char szServerMAC[20];
@@ -3249,6 +3304,8 @@ extern "C" {
 			restore_screen();
 			return;
 		}
+		
+		sprintf(szClientName  ,"clientname%s",szServerNr);
 		sprintf(szServer      ,"server%s",szServerNr);
 		sprintf(szServerMAC   ,"server_mac%s",szServerNr);
 		sprintf(szScale       ,"scale%s",szServerNr);
@@ -3265,6 +3322,7 @@ extern "C" {
 		
 #ifdef HAVE_DREAMBOX_HARDWARE
 
+      strcpy(clientname,"dbox2");
 		strcpy(hostname,"000.000.000.000");
 		strcpy(servermacadress,"00:00:00:00:00:00");
 		gScale=1;
@@ -3291,7 +3349,8 @@ extern "C" {
 				if ( !p ) continue;
 				*p=0;
 				p++;
-				if      ( !strcmp(line,szServer           ) ) strcpy(hostname, p);
+				if      ( !strcmp(line,szClientName       ) ) strcpy(clientname, p);
+				else if ( !strcmp(line,szServer           ) ) strcpy(hostname, p);
 			   else if ( !strcmp(line,szServerMAC        ) ) strcpy(servermacadress, p);
 				else if ( !strcmp(line,szPort             ) ) port = atoi(p);
 				else if ( !strcmp(line,szScale            ) ) gScale = atoi(p);
@@ -3308,6 +3367,7 @@ extern "C" {
 #else
 		CConfigFile config('\t');
 		config.loadConfig(CONFIGDIR "/vdr.conf"); // ToDo JNJN
+		strncpy(clientname, config.getString(szClientName,"dbox2").c_str(), 254);
 		strncpy(hostname, config.getString(szServer,"vnc").c_str(), 254);
 		strncpy(servermacadress, config.getString(szServerMAC,"00:00:00:00:00:00").c_str(), 254);
 		int vnc_port=config.getInt32(szVNCPort,20001);

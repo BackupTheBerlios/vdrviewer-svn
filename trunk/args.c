@@ -30,6 +30,7 @@
 
 char *programName;
 
+char clientname[20];
 char hostname[20];
 char servermacadress[20];
 int port;

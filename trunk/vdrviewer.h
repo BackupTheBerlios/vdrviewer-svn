@@ -70,6 +70,7 @@ extern int endianTest;
 /* args.c */
 
 extern char *programName;
+extern char clientname[];
 extern char hostname[];
 extern char servermacadress[];
 extern int port;
