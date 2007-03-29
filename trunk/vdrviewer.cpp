@@ -69,6 +69,10 @@ extern "C" {
 #define IPACKS		2048
 // original timeout: #define PF_RD_TIMEOUT 3000
 #define PF_RD_TIMEOUT 5000
+
+//much faster Zapping
+#define PF_RECEIVER_RD_TIMEOUT 300
+
 #define PF_EMPTY      0
 #define PF_READY      1
 #define PF_LST_ITEMS  30
@@ -188,6 +192,7 @@ char terminate=0;
 int gScale,sx,sy,ex,ey;
 int usepointer = 0;
 bool g_bResync = false;
+bool g_bReset = false;
 int lcd_port;
 int ccontrol_port;
 int ts_port;
@@ -513,9 +518,7 @@ void *updateLCD(void *sArgument)
 	render_string(screen,22,1, "VDR-Viewer");
 	LCDInfo("Init", true, true);
 	
-	m_pLCDSocket = new cDataSocketTCP(hostname, lcd_port);
-	m_pLCDSocket->Open();
-	LCDInfo("Init", true); // for GraphLCD-Status
+	m_pLCDSocket = NULL;
 	
 	gettimeofday(&oldtime, NULL);
 	g_iBytesReadPES = 0;
@@ -523,73 +526,91 @@ void *updateLCD(void *sArgument)
 	
 	while (!terminate)
 	{
-	   gettimeofday(&curtime, NULL);
-      if (curtime.tv_sec - oldtime.tv_sec > 2)
-      {
-         secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;     
-         g_dDataRate = g_iBytesReadPES / secs * 8 / 1024 / 1024;
-         dDataRateTS = g_iBytesReadTS / secs * 8 / 1024 / 1024;
-         g_iInSpace = ringbuffer_read_space(ringbuf_in);
-         g_iOutSpace = ringbuffer_read_space(ringbuf_out);
-         if ((file = fopen("/proc/stat", "r")) > 0)
-         {
-            stat.user = 0;
-            while (((fscanf(file, "cpu  %d %d %d %d", &(stat.user), &(stat.nice), &(stat.system), &(stat.idle))) != EOF) && 
-                   (stat.user == 0));
-            fclose(file);
-            cpuIdle = stat.idle - oldStat.idle;
-            cpu = (stat.user + stat.nice + stat.system + stat.idle) - (oldStat.user + oldStat.nice + oldStat.system + oldStat.idle);
-            g_cpuUse = (cpu - cpuIdle) * 100 / cpu;
-            oldStat = stat;
-         }
-         dprintf("Info: Recive-Rate(PES) %2.2f MBits/s, Play-Rate(TS) %2.2f MBits/s,\n             IN-Buffer fill %d%%, OUT-Buffer fill %d%%, CPU %2.0f%%\n", g_dDataRate, dDataRateTS, (int)(g_iInSpace*100/ringbuf_in->size), (int)(g_iOutSpace*100/ringbuf_out->size), g_cpuUse);
-         oldtime = curtime;
-         g_iBytesReadPES = 0;
-         g_iBytesReadTS = 0;
-         LCDInfo("", true);
-      }
-      
-      if (m_pLCDSocket != NULL && m_pLCDSocket->IsOpen())
-      {
-   		int len = m_pLCDSocket->Get((char*)buf, sizeof(buf));
-   		if (len <= 0)
-   		{
-   			perror("LCD: recv");
-   			sleep(1);
-   		}
-   		else 
-   		{
-   			g_bGraphLcd = true;
-   			memset(glcd_screen,0,sizeof(glcd_screen));	
-   
-   			for (int y=0;y<64;y++)
-   			{
-   				for (int x=0;x<120/8;x++)
-   				{
-   					for (int k=0;k<8;k++)
-   					{
-   						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
-   							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
-   						else
-   							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
-   					} 
-   				}
-   			}
-   			
-   			if (g_bLcdInfo == false)
+		gettimeofday(&curtime, NULL);
+		if (curtime.tv_sec - oldtime.tv_sec > 2)
+		{
+			secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;     
+			g_dDataRate = g_iBytesReadPES / secs * 8 / 1024 / 1024;
+			dDataRateTS = g_iBytesReadTS / secs * 8 / 1024 / 1024;
+			g_iInSpace = ringbuffer_read_space(ringbuf_in);
+			g_iOutSpace = ringbuffer_read_space(ringbuf_out);
+	
+			if ((file = fopen("/proc/stat", "r")) > 0)
+			{
+				stat.user = 0;
+				while (((fscanf(file, "cpu  %d %d %d %d", &(stat.user), &(stat.nice), &(stat.system), &(stat.idle))) != EOF) && 
+				   (stat.user == 0));
+				fclose(file);
+				cpuIdle = stat.idle - oldStat.idle;
+				cpu = (stat.user + stat.nice + stat.system + stat.idle) - (oldStat.user + oldStat.nice + oldStat.system + oldStat.idle);
+				g_cpuUse = (cpu - cpuIdle) * 100 / cpu;
+				oldStat = stat;
+			}
+	
+			dprintf("Info: Receive-Rate(PES) %2.2f MBits/s, Play-Rate(TS) %2.2f MBits/s,\n             IN-Buffer fill %d%%, OUT-Buffer fill %d%%, CPU %2.0f%%\n", g_dDataRate, dDataRateTS, (int)(g_iInSpace*100/ringbuf_in->size), (int)(g_iOutSpace*100/ringbuf_out->size), g_cpuUse);
+			oldtime = curtime;
+			g_iBytesReadPES = 0;
+			g_iBytesReadTS = 0;
+			LCDInfo("", true);
+		}	
+      		
+	      	if (m_pLCDSocket != NULL && m_pLCDSocket->IsOpen())
+		{	
+	      		if (g_bLcdInfo == true)
+			{
+				dprintf("Closing GraphLCD connection...\n");
+				m_pLCDSocket->Close();
+				delete m_pLCDSocket;
+				m_pLCDSocket = NULL;
+				continue;
+			}
+			
+	   		int len = m_pLCDSocket->Get((char*)buf, sizeof(buf));
+	   		if (len <= 0)
+	   		{
+	   			perror("LCD: recv");
+	   			sleep(1);
+	   		}
+	   		else 
+	   		{
+	   			g_bGraphLcd = true;
+	   			memset(glcd_screen,0,sizeof(glcd_screen));	
+	   
+	   			for (int y=0;y<64;y++)
+	   			{
+	   				for (int x=0;x<120/8;x++)
+	   				{
+	   					for (int k=0;k<8;k++)
+	   					{
+	   						if (*(buf + x + y * (LCD_COLS / 8)) & (1 << k))
+	   							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_ON);
+	   						else
+	   							put_pixel(glcd_screen,x*8+k,y,LCD_PIXEL_OFF);
+	   					} 
+	   				}
+	   			}
+	   			
    				draw_screen(glcd_screen, lcd);
-   		}
-      }
-      else
-   	{
-   	   sleep(1);
-   	}
+	   		}
+	      	}
+	      	else if (g_bLcdInfo == false && m_pLCDSocket == NULL)
+	      	{
+	      		dprintf("Connecting to GraphLCD...\n");
+			LCDInfo("LCD conn...", true);
+			m_pLCDSocket = new cDataSocketTCP(hostname, lcd_port);
+			m_pLCDSocket->Open();
+			LCDInfo("LCD OK", true);
+	      	}
+	      	else
+	   	{
+			sleep(1);
+	   	}
 	}
 	
 	if (m_pLCDSocket != NULL)
 	{
-      m_pLCDSocket->Close();
-      delete m_pLCDSocket;
+		m_pLCDSocket->Close();
+		delete m_pLCDSocket;
 		m_pLCDSocket = NULL;
 	}
 
@@ -642,7 +663,7 @@ static bool mp_openDVBDevices(MP_CTX *ctx)
 {
 	bool ret = true;
 	
-   if (!DevicesOpened)
+	if (!DevicesOpened)
 	{
 		ctx->dmxa = -1;
 		ctx->dmxv = -1;
@@ -677,33 +698,35 @@ static bool mp_openDVBDevices(MP_CTX *ctx)
 //=======================ku
 static void mp_stopDVBDevices(MP_CTX *ctx)
 {
-  if (gDeviceState != DVB_DEVICES_STOPPED && DevicesOpened)
-  {
-  	gDeviceState = DVB_DEVICES_STOPPED;
-  	
-	//-- stop DMX devices --
-	ioctl(ctx->dmxv, DMX_STOP);
-	ioctl(ctx->dmxa, DMX_STOP);
+	if (gDeviceState != DVB_DEVICES_STOPPED && DevicesOpened)
+	{
+		dprintf("STOP DVB Devices\n");
 
-	//-- stop AV devices --
-	ioctl(ctx->vdec, VIDEO_STOP);
-	ioctl(ctx->adec, AUDIO_STOP);
-
-	//-- setup DMX devices (again) --
-	ctx->p.input    = DMX_IN_DVR;
-	ctx->p.output   = DMX_OUT_DECODER;
-	ctx->p.flags    = 0;
-
-	ctx->p.pid      = ctx->pida;
-	ctx->p.pes_type = DMX_PES_AUDIO;
-	ioctl (ctx->dmxa, DMX_SET_PES_FILTER, &(ctx->p));
-
-	ctx->p.pid      = ctx->pidv;
-	ctx->p.pes_type = DMX_PES_VIDEO;
-	ioctl (ctx->dmxv, DMX_SET_PES_FILTER, &(ctx->p));
-
-	usleep(150000);
-  }
+		gDeviceState = DVB_DEVICES_STOPPED;
+		
+		//-- stop DMX devices --
+		ioctl(ctx->dmxv, DMX_STOP);
+		ioctl(ctx->dmxa, DMX_STOP);
+		
+		//-- stop AV devices --
+		ioctl(ctx->vdec, VIDEO_STOP);
+		ioctl(ctx->adec, AUDIO_STOP);
+		
+		//-- setup DMX devices (again) --
+		ctx->p.input    = DMX_IN_DVR;
+		ctx->p.output   = DMX_OUT_DECODER;
+		ctx->p.flags    = 0;
+		
+		ctx->p.pid      = ctx->pida;
+		ctx->p.pes_type = DMX_PES_AUDIO;
+		ioctl (ctx->dmxa, DMX_SET_PES_FILTER, &(ctx->p));
+		
+		ctx->p.pid      = ctx->pidv;
+		ctx->p.pes_type = DMX_PES_VIDEO;
+		ioctl (ctx->dmxv, DMX_SET_PES_FILTER, &(ctx->p));
+		
+		usleep(150000);
+	}
 }
 
 //== mp_startDVBDevices ==
@@ -712,6 +735,8 @@ static void mp_startDVBDevices(MP_CTX *ctx)
 {
 	if (gDeviceState != DVB_DEVICES_RUNNING && DevicesOpened)
 	{
+		dprintf("START DVB Devices\n");
+		
 		//-- start AV devices again and ... --
 		ioctl(ctx->adec, AUDIO_PLAY);             // audio
 		ioctl(ctx->vdec, VIDEO_PLAY);             // video
@@ -734,40 +759,43 @@ static void mp_startDVBDevices(MP_CTX *ctx)
 //=================
 static void mp_freezeAV(MP_CTX *ctx)
 {
-  if (gDeviceState == DVB_DEVICES_RUNNING && DevicesOpened)
-  {
-	//-- freeze (pause) AV playback immediate --
-	ioctl(ctx->vdec, VIDEO_FREEZE);
-	ioctl(ctx->adec, AUDIO_PAUSE);
+	if (gDeviceState == DVB_DEVICES_RUNNING && DevicesOpened)
+	{
+		dprintf("Freeze AV\n");
 
-	//-- workaround: switch off decoder bypass for AC3 audio --
-	if(ctx->ac3 == 1)
-		ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE, 1UL);
-  }
+		//-- freeze (pause) AV playback immediate --
+		ioctl(ctx->vdec, VIDEO_FREEZE);
+		ioctl(ctx->adec, AUDIO_PAUSE);
+		
+		//-- workaround: switch off decoder bypass for AC3 audio --
+		if(ctx->ac3 == 1)
+			ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE, 1UL);
+	}
 }
 
 //== mp_unfreezeAV ==
 //===================
 static void mp_unfreezeAV(MP_CTX *ctx)
 {
-  if (gDeviceState == DVB_DEVICES_RUNNING && DevicesOpened)
-  {
+	if (gDeviceState == DVB_DEVICES_RUNNING && DevicesOpened)
+	{
+		dprintf("UnFreeze AV\n");
 
-	//-- continue AV playback immediate --
-	ctx->p.pid      = ctx->pida;
-	ctx->p.pes_type = DMX_PES_AUDIO;
-
-	ioctl (ctx->dmxa, DMX_SET_PES_FILTER, &(ctx->p));
-	if(ctx->ac3 == 1)
-		ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
-
-	ioctl (ctx->dmxa, DMX_START);
-
-	ioctl(ctx->adec, AUDIO_PLAY);				// audio
-
-	ioctl(ctx->vdec, VIDEO_PLAY);				// video
-	ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL);		// needs sync !
-  }
+		//-- continue AV playback immediate --
+		ctx->p.pid      = ctx->pida;
+		ctx->p.pes_type = DMX_PES_AUDIO;
+		
+		ioctl (ctx->dmxa, DMX_SET_PES_FILTER, &(ctx->p));
+		if(ctx->ac3 == 1)
+			ioctl(ctx->adec, AUDIO_SET_BYPASS_MODE,0UL);	// bypass on
+		
+		ioctl (ctx->dmxa, DMX_START);
+		
+		ioctl(ctx->adec, AUDIO_PLAY);				// audio
+		
+		ioctl(ctx->vdec, VIDEO_PLAY);				// video
+		ioctl(ctx->adec, AUDIO_SET_AV_SYNC, 1UL);		// needs sync !
+	}
 }
 
 static int videoSlowMotion(MP_CTX *ctx, int nframes)
@@ -853,7 +881,6 @@ void checkAspectRatio (int vdec, bool init)
 		if(ioctl(vdec, VIDEO_GET_SIZE, &size) < 0)
 			perror("VIDEO_GET_SIZE");
 		last_check=0;
-		return;
 	}
 	else
 	{
@@ -887,6 +914,7 @@ void checkAspectRatio (int vdec, bool init)
 		}
 		last_check=time(NULL);
 	}
+
 }
 
 // Pacemaker's stuff End
@@ -1034,379 +1062,371 @@ bool SendPlayStateReq(void)
 
 void *mp_ClientControl(void *sArgument)
 {
-   int rd;
-   SClientControl data;
-   
-   dprintf("ClientControlThread gestartet, Server: %s\n", hostname);
-   
-   m_pClientControlSocket = new cDataSocketTCP(hostname, ccontrol_port);
-   
-   if ( !m_pClientControlSocket->Open() )
-   {
-      dprintf("ClientControl: Cannot Connect!\n");
-   }
-   else 
-   {
-      dprintf("ClientControl: Connected\n");
-      
-      SendClientInfo();
-      
-      while( !terminate )
-      {
-         if ((rd = (int)m_pClientControlSocket->Get((char*)&data, sizeof(data), PF_RD_TIMEOUT)) == sizeof(data))
-         {
-            data.dataLen = Swap32(data.dataLen);
-            dprintf("ClientControl: pakType: %d, DataLen: %d, DataSize: %d\n", data.pakType, data.dataLen, sizeof(data));
-            switch (data.pakType)
-            {
-            case ptPlayState:
-               SClientControlPlayState state;
-               if ((rd = (int)m_pClientControlSocket->Get((char*)&state, data.dataLen, PF_RD_TIMEOUT)) == data.dataLen)
-               {                   
-                  dprintf("ClientControl: PlayMode: %d, Play: %d, Forward: %d, Speed: %d\n", state.PlayMode, state.Play, state.Forward, state.Speed);
-                  if ((g_PlayState.PlayMode != state.PlayMode) || (g_PlayState.Forward != state.Forward))
-                  {
-                     memcpy(&g_PlayState, &state, sizeof(state));
-                     ctx->playstate = eBufferReset;
-                  }
-                  else
-                  {
-                     if ((g_PlayState.Speed != state.Speed) && (state.Play))
-                        g_bResync = true;
-                       
-                     ctx->playstate = ePlay;
-                     memcpy(&g_PlayState, &state, sizeof(state));
-                     SendPlayStateReq();
-                  } 
-               }
-               break;
-               
-            case ptStillPicture:
-               SClientControlStillPicture picdata;
-               picdata.Data = (uchar*)malloc(data.dataLen);
-               picdata.Length = data.dataLen;
-               if ((rd = (int)m_pClientControlSocket->Get((char*)picdata.Data, picdata.Length, PF_RD_TIMEOUT)) == picdata.Length)
-               {
-                  dprintf("videoStillPicture %d\n", rd);
-                  ctx->playstate = eBufferReset;
-                  while (ctx->playstate != eBufferRefill)
-                     usleep(100000);
-                     
-                  while (ctx->playstate != ePlay)
-                  {
-                     ringbuffer_write(ringbuf_in, (char*)picdata.Data, picdata.Length);
-                     usleep(50000);
-                  }
-                  usleep(200000);
-                  
-                  ctx->playstate = ePause;
-               }
-               else
-               {
-                  dprintf("readed data to short %d\n", rd);
-               }
-               free(picdata.Data);
-               break;
-               
-            case ptFreeze:
-               ctx->playstate = ePause;
-               break;
-               
-            default:
-               dprintf("unknown Packettype %d\n", data.pakType);
-               break;
-            }
-         }
-      }
-   }
-   
-   if (m_pClientControlSocket != NULL)
+	int rd;
+	SClientControl data;
+	
+	dprintf("ClientControlThread gestartet, Server: %s\n", hostname);
+	
+	m_pClientControlSocket = new cDataSocketTCP(hostname, ccontrol_port);
+	
+	if ( !m_pClientControlSocket->Open() )
 	{
-      m_pClientControlSocket->Close();
-      delete m_pClientControlSocket;
+		dprintf("ClientControl: Cannot Connect!\n");
+	}
+	else 
+	{
+		dprintf("ClientControl: Connected\n");
+	
+		SendClientInfo();
+		
+		while( !terminate )
+		{
+			if ((rd = (int)m_pClientControlSocket->Get((char*)&data, sizeof(data), PF_RD_TIMEOUT)) == sizeof(data))
+			{
+				data.dataLen = Swap32(data.dataLen);
+				dprintf("ClientControl: pakType: %d, DataLen: %d, DataSize: %d\n", data.pakType, data.dataLen, sizeof(data));
+				switch (data.pakType)
+				{
+					case ptPlayState:
+						SClientControlPlayState state;
+						if ((rd = (int)m_pClientControlSocket->Get((char*)&state, data.dataLen, PF_RD_TIMEOUT)) == data.dataLen)
+						{                   
+							dprintf("ClientControl: PlayMode: %d, Play: %d, Forward: %d, Speed: %d\n", state.PlayMode, state.Play, state.Forward, state.Speed);
+							if ((g_PlayState.PlayMode != state.PlayMode) || (g_PlayState.Forward != state.Forward))
+							{
+								memcpy(&g_PlayState, &state, sizeof(state));
+								ctx->playstate = eBufferReset;
+							}
+							else
+							{
+								// Resetting the Buffer prevents A/V glitches
+								if ((g_PlayState.Speed != state.Speed) && (state.Play))
+									g_bReset = true;
+								
+								ctx->playstate = ePlay;
+								memcpy(&g_PlayState, &state, sizeof(state));
+								SendPlayStateReq();
+							} 
+						}
+					break;
+					
+					case ptStillPicture:
+		
+						SClientControlStillPicture picdata;
+						picdata.Data = (uchar*)malloc(data.dataLen);
+						picdata.Length = data.dataLen;
+						if ((rd = (int)m_pClientControlSocket->Get((char*)picdata.Data, picdata.Length, PF_RD_TIMEOUT)) == picdata.Length)
+						{
+							dprintf("videoStillPicture %d\n", rd);
+							ctx->playstate = eBufferReset;
+							while (ctx->playstate != eBufferRefill)
+							usleep(100000);
+						
+							while (ctx->playstate != ePlay)
+							{
+								ringbuffer_write(ringbuf_in, (char*)picdata.Data, picdata.Length);
+								usleep(50000);
+							}
+							usleep(200000);
+						
+							ctx->playstate = ePause;
+						}
+						else
+						{
+							dprintf("readed data to short %d\n", rd);
+						}
+						
+						free(picdata.Data);
+						break;
+					
+					case ptFreeze:
+						ctx->playstate = ePause;
+						break;
+					
+					default:
+						dprintf("unknown Packettype %d\n", data.pakType);
+						break;
+				}
+			}
+		}
+	}
+	
+	if (m_pClientControlSocket != NULL)
+	{
+		m_pClientControlSocket->Close();
+		delete m_pClientControlSocket;
 		m_pClientControlSocket = NULL;
 	}
-       
-   dprintf("ClientControlThread beendet\n");
-   pthread_exit(NULL);
+	
+	dprintf("ClientControlThread beendet\n");
+	pthread_exit(NULL);
 }
 
 void *mp_ReceiveStream(void *sArgument)
 {
-   int count = 0;
-   char  dvrBuf[PF_BUF_SIZE];
-   char  *pDvrBuf;
-   int noDataCount = 0;
-   int iPlaceToWrite;
-   int rd;
-   size_t buffer, iInSpace, iOutSpace;
-   
-   dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
-   
-   m_pStreamSocket = new cDataSocketTCP(hostname, ts_port);
-   
-   if ( !m_pStreamSocket->Open() )
-   {
-      dprintf("Receiver: Cannot Connect! Exiting!\n");
-      terminate = 1;
-   }
-   else 
-   {
-      dprintf("Receicer: Connected\n");
-   }
-   
-   while( !terminate )
-   {
-      if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset))
-		{
-		   if (ctx->playstate == eBufferReset)
-		      ctx->playstate = eInBufferReset;
-		   m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, 100); // Socket-Buffer leeren
-		   usleep(10000);
-		   continue;
-		}
+	int count = 0;
+	char  dvrBuf[PF_BUF_SIZE];
+	char  *pDvrBuf;
+	int noDataCount = 0;
+	int iPlaceToWrite;
+	int rd;
+	size_t buffer, iInSpace, iOutSpace;
 	
-	   iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
-      if ( PF_BUF_SIZE > iPlaceToWrite ) 
-      {
-         if (count > 100)
-         {
-            // This shouldn't happen
-            dprintf("Receiver: Reset da keine Daten gelesen werden!\n");
-            count=0;
-            ringbuffer_reset(ringbuf_in);
-            ctx->playstate = eBufferRefill;
-            LCDInfo("Recv. Err ");
-         }
-      
-         usleep(10000);
-         count++;
-         continue;
-      }
-      
-      if (g_PlayState.Speed > 0)
-      {
-         buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 6);
+	dprintf("ReceiverThread gestartet, Server: %s\n", hostname);
+	
+	m_pStreamSocket = new cDataSocketTCP(hostname, ts_port);
+	
+	if ( !m_pStreamSocket->Open() )
+	{
+		dprintf("Receiver: Cannot Connect! Exiting!\n");
+		terminate = 1;
+	}
+	else 
+	{
+		dprintf("Receiver: Connected\n");
+	}
+	
+	while(!terminate)
+	{
+		if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset))
+		{
+			if (ctx->playstate == eBufferReset)
+				ctx->playstate = eInBufferReset;
+	
+			m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, 100); // Socket-Buffer leeren
+			usleep(10000);
+			continue;
+		}
+		
+		iPlaceToWrite = ringbuffer_write_space (ringbuf_in);
+		if ( PF_BUF_SIZE > iPlaceToWrite ) 
+		{
+			if (count > 100 && ctx->playstate != ePause)
+			{
+				// This shouldn't happen
+				dprintf("Receiver: Reset da keine Daten gelesen werden!\n");
+				count=0;
+				ringbuffer_reset(ringbuf_in);
+				ctx->playstate = eBufferRefill;
+				LCDInfo("Recv. Err ");
+			}
+		
+			usleep(10000);
+			count++;
+			continue;
+		}
+		
+		if (g_PlayState.Speed > 0)
+		{
+			buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 6);
+		
+			iInSpace = ringbuffer_read_space(ringbuf_in);
+			iOutSpace = ringbuffer_read_space(ringbuf_out);
 
-         iInSpace = ringbuffer_read_space(ringbuf_in);
-         iOutSpace = ringbuffer_read_space(ringbuf_out);
 			if (iInSpace + iOutSpace > buffer)
 			{
-			   if (ctx->playstate == eBufferRefillAll)
-			      ctx->playstate = eBufferRefill;
-			   usleep(10000);
-			   continue;
-		   }
-      }
-   
-      count = 0;
-      if (m_pStreamSocket != NULL)
-      {
-         iPlaceToWrite = ringbuffer_get_writepointer(ringbuf_in, &pDvrBuf, PF_BUF_SIZE);
-         if (iPlaceToWrite == PF_BUF_SIZE)
-         {
-            rd = (int)m_pStreamSocket->Get(pDvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);
-            if (rd > 0)
-               ringbuffer_write_advance(ringbuf_in, rd);
-         }
-         else
-         {
-            rd = (int)m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, PF_RD_TIMEOUT);
-            if (rd > 0)
-               ringbuffer_write(ringbuf_in, dvrBuf, rd);
-         }
-         
-         if ( rd > 0)
-         {       
-            g_iBytesReadPES += rd;
-            noDataCount = 0;
-         }
-         else
-         {
-            noDataCount ++;
-            if (noDataCount > 20)
-            {
-               ctx->playstate = eBufferRefill;
-               //ctx->playstate = ePause; // Pause-Modus: für zukünftige Erweiterungen
-               ringbuffer_reset(ringbuf_in);
-               ringbuffer_reset(ringbuf_out);
-               dprintf("Receiver: Reset Buffer!!!\n");
-               LCDInfo("Reset     ");
-            }
-            usleep(10000);
-         }
-      }
-   }
-   
-   if (m_pStreamSocket != NULL)
+				if (ctx->playstate == eBufferRefillAll)
+					ctx->playstate = eBufferRefill;
+		
+				usleep(10000);
+				continue;
+			}
+		}
+		
+		count = 0;
+		if (m_pStreamSocket != NULL)
+		{
+			iPlaceToWrite = ringbuffer_get_writepointer(ringbuf_in, &pDvrBuf, PF_BUF_SIZE);
+			if (iPlaceToWrite == PF_BUF_SIZE)
+			{
+				rd = (int)m_pStreamSocket->Get(pDvrBuf, PF_BUF_SIZE, PF_RECEIVER_RD_TIMEOUT);
+				if (rd > 0)
+					ringbuffer_write_advance(ringbuf_in, rd);
+			}
+			else
+			{
+				rd = (int)m_pStreamSocket->Get(dvrBuf, PF_BUF_SIZE, PF_RECEIVER_RD_TIMEOUT);
+				if (rd > 0)
+					ringbuffer_write(ringbuf_in, dvrBuf, rd);
+			}
+			
+			if ( rd > 0)
+			{       
+				g_iBytesReadPES += rd;
+				noDataCount = 0;
+			}
+			else
+			{
+				if (ctx->playstate != ePause)
+				{
+					noDataCount ++;
+					if (noDataCount > 100)
+					{
+						ctx->playstate = eBufferRefill;
+						ringbuffer_reset(ringbuf_in);
+						ringbuffer_reset(ringbuf_out);
+						dprintf("Receiver: Reset Buffer!!!\n");
+						LCDInfo("Reset     ");
+					}
+				}
+				usleep(10000);
+			}
+		}
+	}
+	
+	if (m_pStreamSocket != NULL)
 	{
-      m_pStreamSocket->Close();
-      delete m_pStreamSocket;
+		m_pStreamSocket->Close();
+		delete m_pStreamSocket;
 		m_pStreamSocket = NULL;
 	}
-     
-   dprintf("Receiver: Thread beendet\n");
-   pthread_exit(NULL);
+	
+	dprintf("Receiver: Thread beendet\n");
+	pthread_exit(NULL);
 }
 
 
 void *mp_RemuxStream(void *sArgument)
 {
-   size_t rd;
-   char *pPesData, *pTSData;
-   char ts[TS_PACKET_SIZE];
+	size_t rd;
+	char *pPesData, *pTSData;
+	char ts[TS_PACKET_SIZE];
 	uchar acc=0;    // continutiy counter for audio packets
 	uchar vcc=0;    // continutiy counter for video packets
 	uchar *cc;      // either cc=&vcc; or cc=&acc;
 	unsigned short pid=0;
 	int pesPacketLen;
 	int tsPacketLen;
-   int iInSpace, iOutPlace;
-   int tsPacksCount;
-   uchar rest;
+	int iInSpace, iOutPlace;
+	int tsPacksCount;
+	uchar rest;
 	
 	dprintf("RemuxThread gestartet, Server: %s\n", hostname);
 	
 	while( terminate == 0 )
 	{
-	   if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset) || 
-	       (ctx->playstate == eOutBufferReset))
+		if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset) || 
+		(ctx->playstate == eOutBufferReset))
 		{
-		   if (ctx->playstate == eInBufferReset)
-		   {
-		      ringbuffer_reset(ringbuf_in);
-		      ctx->playstate = eOutBufferReset;
-		      SendPlayStateReq();
-		   }
-		   
-		   usleep(100000);
-		   continue;
+			if (ctx->playstate == eInBufferReset)
+			{
+				ringbuffer_reset(ringbuf_in);
+				ctx->playstate = eOutBufferReset;
+				SendPlayStateReq();
+			}
+			
+			// Faster Zapping
+			usleep(10000);
+			continue;
 		} 
+	
+		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 6);
+		if (rd < 6)
+		{  
+			usleep(300000);
+			continue;
+		}
+
+		// This is not exact, but it works and takes not so much CPU time 
+		if ((ringbuffer_read_space(ringbuf_in) < 2048) || (ringbuffer_write_space(ringbuf_out) < 2256))
+		{
+			usleep(300000);
+			continue;
+		}  
+	
+		if ( (pPesData[0]!=0x00) || (pPesData[1]!=0x00) || (pPesData[2]!=0x01) ) 
+		{
+			int deleted = 0;
+			do
+			{
+				ringbuffer_read_advance(ringbuf_in, 1); // remove 1 Byte
+				rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 3);
+				deleted ++;
+			}
+			while ((rd == 3) && ((pPesData[0]!=0x00) || (pPesData[1]!=0x00) || (pPesData[2]!=0x01)));
+			dprintf("No valid PES signature found. %d Bytes deleted.\n", deleted);
+			continue;
+		}
+
+		if ( (pPesData[3]>=0xC0) && (pPesData[3]<=0xDF) || (pPesData[3] == 0xBD) ) 
+		{
+			pid=ctx->pida & 0xFF;
+			cc=&acc;
+			
+			g_iIsAC3 = (pPesData[3] == 0xBD);
+		} 
+		else 
+		{
+			if ( (pPesData[3]>=0xE0) && (pPesData[3]<=0xEF) ) 
+			{
+				pid=ctx->pidv & 0xFF;
+				cc=&vcc;
+			} 
+			else if (pPesData[3] == 0xBE)
+			{
+				dprintf("Padding stream removed\n");
+				ringbuffer_read_advance(ringbuf_in, ((pPesData[4]<<8) | pPesData[5]) + 6);
+				continue;
+			} 
+			else 
+			{
+				dprintf("Unknown stream id: neither video nor audio type 0x%X.\n", pPesData[3]);
+				// throw away whole PES packet
+				ringbuffer_read_advance(ringbuf_in, 1); // remove 1 Byte
+				continue;
+			}
+		}
 		
-	   if (1)
-      {        
-   		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 6);
-   		if (rd < 6)
-   		{  
-   		    usleep(600000);
-   		    continue;
-   		}
-   		  		
-   		if ( (pPesData[0]!=0x00) || (pPesData[1]!=0x00) || (pPesData[2]!=0x01) ) 
-   		{
-   		    int deleted = 0;
-   		    do
-   		    {
-   		       ringbuffer_read_advance(ringbuf_in, 1); // remove 1 Byte
-   		       rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, 3);
-   		       deleted ++;
-   		    }
-   		    while ((rd == 3) && ((pPesData[0]!=0x00) || (pPesData[1]!=0x00) || (pPesData[2]!=0x01)));
-   		    dprintf("No valid PES signature found. %d Bytes deleted.\n", deleted);
-   		    continue;
-   		}
-   		
-         if ( (pPesData[3]>=0xC0) && (pPesData[3]<=0xDF) || pPesData[3] == 0xBD ) 
-   		{
-   		    pid=ctx->pida;
-   		    cc=&acc;
+		pesPacketLen = ((pPesData[4]<<8) | pPesData[5]) + 6;
+		tsPacksCount = (int)pesPacketLen / 184;
+		rest = pesPacketLen % 184;
+		//tsPacketLen = (tsPacksCount) * TS_PACKET_SIZE  + ((rest > 0) ? TS_PACKET_SIZE : 0); 
+		
+		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, pesPacketLen);		
+		if ((int)rd != pesPacketLen)
+		{
+			dprintf("not enought bytes for whole packet, have only: %d but LenShoud be %d\n", rd, pesPacketLen);
+			continue;
+		}
+		
+		//--------------------------------------divide PES packet into small TS packets-----------------------    
+		bool first = true;    
+		int i;
+		for (i=0; i < tsPacksCount; i++) 
+		{
+			ts[0] = 0x47; //SYNC Byte
+			if (first) ts[1] = 0x40;        // Set PUSI or
+			else       ts[1] = 0x00;        // clear PUSI,  TODO: PID (high) is missing
+			ts[2] = pid;             // PID (low)  
+			ts[3] = 0x10 | ((*cc)&0x0F);    // No adaptation field, payload only, continuity counter 
+			++(*cc);
+			ringbuffer_write(ringbuf_out, ts, 4);
+			ringbuffer_write(ringbuf_out, pPesData + i * 184, 184);
+			first = false;
+		}
 
-   		    g_iIsAC3 = (pPesData[3] == 0xBD);
-   		} 
-   		else 
-   		{
-            if ( (pPesData[3]>=0xE0) && (pPesData[3]<=0xEF) ) 
-            {
-               pid=ctx->pidv;
-               cc=&vcc;
-            } 
-            else if (pPesData[3] == 0xBE)
-            {
-               dprintf("Padding stream removed\n");
-               ringbuffer_read_advance(ringbuf_in, ((pPesData[4]<<8) | pPesData[5]) + 6);
-               continue;
-            } 
-            else 
-            {
-               dprintf("Unknown stream id: neither video nor audio type 0x%X.\n", pPesData[3]);
-               // throw away whole PES packet
-               ringbuffer_read_advance(ringbuf_in, 1); // remove 1 Byte
-               continue;
-            }
-   		}
-   		
-   		pesPacketLen = ((pPesData[4]<<8) | pPesData[5]) + 6;
-   		tsPacksCount = (int)pesPacketLen / 184;
-   		rest = pesPacketLen % 184;
-   		tsPacketLen = (tsPacksCount) * TS_PACKET_SIZE  + ((rest > 0) ? TS_PACKET_SIZE : 0); 
-   		iInSpace = ringbuffer_read_space(ringbuf_in);
-         iOutPlace = ringbuffer_write_space (ringbuf_out);
-   		if ((iInSpace < pesPacketLen + 3) || (iOutPlace < tsPacketLen))
-   		{
-   		    usleep(600000);
-   		    continue;
-   		}  
+		if (rest>0) 
+		{
+			ts[0] = 0x47; //SYNC Byte
+			if (first) ts[1] = 0x40;        // Set PUSI or
+			else       ts[1] = 0x00;        // clear PUSI,  TODO: PID (high) is missing
+			ts[2] = pid;             // PID (low)  
+			ts[3] = 0x30 | ((*cc)&0x0F);    // adaptation field, payload, continuity counter 
+			++(*cc);
+			ts[4] = 183-rest;
+			if (ts[4]>0) 
+			{
+				ts[5] = 0x00;
+				memset(ts + 6, 0xFF, ts[4] - 1);
+			}
+			ringbuffer_write(ringbuf_out, ts, TS_PACKET_SIZE - rest);
+			ringbuffer_write(ringbuf_out, pPesData + i * 184, rest);
+		}
 
-   		rd = ringbuffer_get_readpointer(ringbuf_in, &pPesData, pesPacketLen);		
-   		if ((int)rd != pesPacketLen)
-   		{
-   		   dprintf("not enought bytes for whole packet, have only: %d but LenShoud be %d\n", rd, pesPacketLen);
-		      continue;
-		   }
-		   
-   		   
-         //--------------------------------------divide PES packet into small TS packets-----------------------    
-         bool first = true;    
-         int i;
-         for (i=0; i < tsPacksCount; i++) 
-         {
-            ts[0] = 0x47; //SYNC Byte
-            if (first) ts[1] = 0x40;        // Set PUSI or
-            else       ts[1] = 0x00;        // clear PUSI,  TODO: PID (high) is missing
-            ts[2] = pid & 0xFF;             // PID (low)  
-            ts[3] = 0x10 | ((*cc)&0x0F);    // No adaptation field, payload only, continuity counter 
-            ++(*cc);
-            ringbuffer_write(ringbuf_out, ts, 4);
-            ringbuffer_write(ringbuf_out, pPesData + i * 184, 184);
-            first = false;
-         }
-         if (rest>0) 
-         {
-            ts[0] = 0x47; //SYNC Byte
-            if (first) ts[1] = 0x40;        // Set PUSI or
-            else       ts[1] = 0x00;        // clear PUSI,  TODO: PID (high) is missing
-            ts[2] = pid & 0xFF;             // PID (low)  
-            ts[3] = 0x30 | ((*cc)&0x0F);    // adaptation field, payload, continuity counter 
-            ++(*cc);
-            ts[4] = 183-rest;
-            if (ts[4]>0) {
-              ts[5] = 0x00;
-              memset(ts + 6, 0xFF, ts[4] - 1);
-            }
-            ringbuffer_write(ringbuf_out, ts, TS_PACKET_SIZE - rest);
-            ringbuffer_write(ringbuf_out, pPesData + i * 184, rest);
-         }
-         ringbuffer_read_advance(ringbuf_in, pesPacketLen);
-   	}
-   	else
-      {
-         iInSpace = ringbuffer_read_space(ringbuf_in);
-         iOutPlace = ringbuffer_write_space (ringbuf_out);
-         if ((iInSpace < TS_PACKET_SIZE) || (iOutPlace < TS_PACKET_SIZE))
-         {
-             usleep(600000);
-   		    continue;
-         }
-         
-         tsPacketLen = (iOutPlace < iInSpace) ? iOutPlace : iInSpace;
-         tsPacketLen = (tsPacketLen > TS_PACKET_SIZE) ? TS_PACKET_SIZE : tsPacketLen;
-         
-         rd = ringbuffer_get_readpointer(ringbuf_in, &pTSData, tsPacketLen);
-         ringbuffer_write(ringbuf_out, pTSData, rd);
-         ringbuffer_read_advance(ringbuf_in, tsPacketLen);
-      }
+		ringbuffer_read_advance(ringbuf_in, pesPacketLen);
+
 	}
-
+	
 	dprintf("Remuxer: Thread beendet\n");
 	pthread_exit(NULL);
 	
@@ -1423,6 +1443,7 @@ void *mp_playStream(void *sArgument)
 	double outrate, secs;
 	size_t buffer;
 	int iSpeedCnt = 0;
+	int lastSpeed = 0;
 	
 	//-- install poller --
 	pHandle.fd     = ctx->inFd;
@@ -1438,31 +1459,36 @@ void *mp_playStream(void *sArgument)
 
 	while( terminate == 0 )
 	{
-	   if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset) || 
-	       (ctx->playstate == eOutBufferReset))
+		if ((ctx->playstate == eBufferReset) || (ctx->playstate == eInBufferReset) || 
+		(ctx->playstate == eOutBufferReset))
 		{
-		   if (gDeviceState != DVB_DEVICES_STOPPED)
-		   {
-		      usleep(600000);
-		      mp_stopDVBDevices(ctx);
-		   }
-		   
-		   if (ctx->playstate == eOutBufferReset)
-		   {
-		      ringbuffer_reset(ringbuf_out);
-		      ctx->playstate = eBufferRefill;
-		   }
-		      
-		   usleep(100000);
-		   continue;
+			if (gDeviceState != DVB_DEVICES_STOPPED)
+			{
+				usleep(600000);
+				mp_stopDVBDevices(ctx);
+			}
+		
+			if (ctx->playstate == eOutBufferReset)
+			{
+				ringbuffer_reset(ringbuf_out);
+				ctx->playstate = eBufferRefill;
+			}
+		
+			usleep(100000);
+			continue;
 		} 
 		
 		if (ctx->playstate == ePause)
 		{
-			
 			if (!freezed)
 			{
-				mp_freezeAV(ctx);
+				// Freezing while in AC3-Mode will sometimes
+				// freeze the whole box
+				if (ctx->ac3)
+					mp_stopDVBDevices(ctx);
+				else
+					mp_freezeAV(ctx);
+				
 				freezed = true;
 				dprintf("Player: Freezing\n");
 			}
@@ -1476,19 +1502,18 @@ void *mp_playStream(void *sArgument)
 		if ( ctx->playstate == eBufferRefill || ctx->playstate == eBufferRefillAll) 
 		{
 			usleep(500000);
-			
 			datacounter = -1;
 			
 			mp_stopDVBDevices(ctx);
 			if (ctx->playstate == eBufferRefillAll)
 				buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) * 0.95);
-		   else if (g_PlayState.Play)
-		      buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 8);
+		   	else if (g_PlayState.Play)
+		      		buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 8);
 			else
 				buffer = (size_t)((ringbuf_in->size + ringbuf_out->size) / 4);
 
-         iInSpace = ringbuffer_read_space(ringbuf_in);
-         iOutSpace = ringbuffer_read_space(ringbuf_out);
+         		iInSpace = ringbuffer_read_space(ringbuf_in);
+         		iOutSpace = ringbuffer_read_space(ringbuf_out);
 			if (iInSpace + iOutSpace < buffer)
 			{
 				if (play_begun != time(NULL))
@@ -1521,16 +1546,13 @@ void *mp_playStream(void *sArgument)
 			
 			if ( ctx->playstate == eBufferRefill || ctx->playstate == eBufferRefillAll) 
 			   ctx->playstate = ePlayInit;
-			
+
 			continue;
 		} 
      
-      rd = ringbuffer_get_readpointer(ringbuf_out, &(ctx->dvrBuf), ctx->readSize);
-      g_iBytesReadTS += rd;
+      		rd = ringbuffer_get_readpointer(ringbuf_out, &(ctx->dvrBuf), ctx->readSize);
+      		g_iBytesReadTS += rd;
       
-		
-		//dprintf("Puffergroesse: %d, Gelesene Bytes: %d\n",rSize, rd);
-		
 		// Falls der Datenstrom abgebrochen ist -> Neuinitialisierung versuchen. 
 		// Problem: ffnetdev sendet keine Bytes, falls der VDR auf Pause steht. Dann greift der Timeout, 
 		// in der funktion mp_tcpRead, was im original movieplayer zum abbruch der Verbindung führt.
@@ -1538,13 +1560,18 @@ void *mp_playStream(void *sArgument)
 		//
 		// wenn nicht bereits durch Reciever ein Refill initiiert wurde, dann den
 		// Buffer komplett füllen um einen erneuten Buffer-underrun zu vermeiden
-		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize || g_bResync) )
+		if(ctx->playstate == ePlay && terminate == 0 && (rd != ctx->readSize ||g_bResync || g_bReset) )
 		{
 			dprintf("Datenstrom abgebrochen oder ReSync -> Neuinit!\n");
-			iOutSpace = ringbuffer_read_space(ringbuf_out);
+			
 			dprintf("play: %lus buffer:%d read:%d to_read:%d \n", time(NULL) - play_begun, iOutSpace, rd, ctx->readSize);
 
-			if (g_bResync)
+			if (g_bReset)
+			{
+				ctx->playstate = eBufferReset;
+				LCDInfo("Reset     ");
+			}
+			else if (g_bResync)
 			{
 				ctx->playstate = eBufferRefill;
 				LCDInfo("Resync    ");
@@ -1580,7 +1607,7 @@ void *mp_playStream(void *sArgument)
 			}
 
 			g_bResync = false;
-			
+			g_bReset = false;
 			continue;
 		}
 
@@ -1593,24 +1620,45 @@ void *mp_playStream(void *sArgument)
 		
 		if (g_iIsAC3 != ctx->ac3)
 		{
-		   usleep(500000);
-		   mp_stopDVBDevices(ctx);
-		   ctx->ac3 = g_iIsAC3;
+			dprintf("AC3 %d\n", g_iIsAC3);
+		   	ctx->ac3 = g_iIsAC3;
+		   	ctx->playstate = eOutBufferReset;
+		   	continue;
 		}
 
 		checkAspectRatio(ctx->vdec, false);
 
+		// Special AC3 behaviours
+		// prevents dbox freezes
+		if (ctx->ac3)
+		{
+			if (freezed)
+			{
+				freezed = false;
+				LCDInfo("Playing   ");
+			}
+			else if (g_PlayState.Speed > 0)
+			{
+				dprintf("No AV output - AC3 is on!");
+				ringbuffer_read_advance(ringbuf_out, ctx->readSize);
+				continue;
+			} 
+		}	
+
 	    	//-- write stream data now --
 		int done = 0;
 		int wr;
-		if (datacounter = -1);
+		
+		if (datacounter == -1);
 		{
-		   gettimeofday(&oldtime, NULL);
-		   datacounter = 0;
+			gettimeofday(&oldtime, NULL);
+		   	datacounter = 0;
 		}
+		
 		while ((rd > 0) && (!terminate))
 		{
 			wr = write(ctx->dvr, ctx->dvrBuf + done, rd);
+			
 			if (wr < 0)
 			{
 				perror("Player: Stream write error");
@@ -1620,66 +1668,73 @@ void *mp_playStream(void *sArgument)
 			}
 			rd   -= wr;
 			done += wr;
-			datacounter += wr;
 		}
-		ringbuffer_read_advance(ringbuf_out, ctx->readSize);
-      
-      gettimeofday(&curtime, NULL);
-      if (curtime.tv_sec - oldtime.tv_sec > 1)
-      {
-         secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;		
-         outrate = datacounter / secs * 8 / 1024 / 1024;
-   		if (outrate < 2)
-   		{
-   		   iInSpace = ringbuffer_read_space(ringbuf_in);
-            inBuffFill = iInSpace * 100 / ringbuf_in->size;
-            if (inBuffFill > 60)
-            {
-               ringbuffer_reset(ringbuf_out);
-            }
-   		   dprintf("Autoresync\n");
-   		   g_bResync = true;
-   		}
-   		oldtime = curtime;
-		   datacounter = 0;
-      }
 
-      mp_startDVBDevices(ctx);
-      
+      		mp_startDVBDevices(ctx);
+      		
+		datacounter += done;
+
+		ringbuffer_read_advance(ringbuf_out, ctx->readSize);
+
+      		gettimeofday(&curtime, NULL);
+      		if (curtime.tv_sec - oldtime.tv_sec > 2)
+      		{
+         		secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 - (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;		
+         		outrate = datacounter / secs * 8 / 1024 / 1024;
+
+   			if (outrate < 1)
+   			{
+   		   		iInSpace = ringbuffer_read_space(ringbuf_in);
+            			inBuffFill = iInSpace * 100 / ringbuf_in->size;
+
+            			if (inBuffFill > 60)
+               				ringbuffer_reset(ringbuf_out);
+
+		   		dprintf("Autoresync\n");
+   		   		g_bResync = true;
+   			}
+   			oldtime = curtime;
+		   	datacounter = 0;
+      		}
+
 		if (freezed)
 		{
 			mp_unfreezeAV(ctx);
 			freezed = false;
+			LCDInfo("Playing   ");
 		}
 				
-		if (g_PlayState.Speed > 0)
-      {
-         if (g_PlayState.Play)
-         {
-            if (iSpeedCnt == 20)
-            {    
-               ioctl(ctx->vdec, VIDEO_FREEZE);
-               ioctl(ctx->adec, AUDIO_PAUSE);
-               usleep(g_PlayState.Speed * 100000);
-               ioctl(ctx->vdec, VIDEO_PLAY);
-               ioctl(ctx->adec, AUDIO_PLAY);
-               iSpeedCnt = 0;
-            }
-         }
-         else
-         {
-            if (iSpeedCnt == (10 - g_PlayState.Speed) * 20)
-            {    
-               ioctl(ctx->vdec, VIDEO_FREEZE);
-               ioctl(ctx->adec, AUDIO_PAUSE);
-               usleep(100000);
-               ioctl(ctx->vdec, VIDEO_PLAY);
-               ioctl(ctx->adec, AUDIO_PLAY);
-               iSpeedCnt = 0;
-            }
-         }
-         iSpeedCnt++;
-      }
+		if (g_PlayState.Speed > 0 && !ctx->ac3)
+      		{
+         		if (g_PlayState.Play)
+         		{
+            			if (iSpeedCnt == 20)
+            			{    
+					ioctl(ctx->vdec, VIDEO_FREEZE);
+					ioctl(ctx->adec, AUDIO_PAUSE);
+					usleep(g_PlayState.Speed * 100000);
+					ioctl(ctx->vdec, VIDEO_PLAY);
+					ioctl(ctx->adec, AUDIO_PLAY);
+					iSpeedCnt = 0;
+				}
+			}
+			else
+			{
+				if (iSpeedCnt == (10 - g_PlayState.Speed) * 20)
+				{    
+					ioctl(ctx->vdec, VIDEO_FREEZE);
+					ioctl(ctx->adec, AUDIO_PAUSE);
+					usleep(100000);
+					ioctl(ctx->vdec, VIDEO_PLAY);
+					ioctl(ctx->adec, AUDIO_PLAY);
+					iSpeedCnt = 0;
+				}
+				
+				lastSpeed = g_PlayState.Speed;
+				
+			}
+			iSpeedCnt++;
+		}
 	}
 	
 	mp_stopDVBDevices(ctx);
@@ -1692,7 +1747,7 @@ void *mp_playStream(void *sArgument)
 
 void Resync()
 {
-    g_bResync = True;
+	g_bResync = True;
 }
 
 void ToggleLCD()
@@ -1703,9 +1758,8 @@ void ToggleLCD()
 void WakeupVDR()
 {
 	char cmd[50];
-   
-   sprintf(cmd, "/bin/etherwake %s", servermacadress);
-   dprintf("Wakeup VDR '%s'\n", cmd);
+	sprintf(cmd, "/bin/etherwake %s", servermacadress);
+	dprintf("Wakeup VDR '%s'\n", cmd);
 	system(cmd);
 }
 
@@ -2442,27 +2496,31 @@ dprintf("reading ms_fd\n");
 			dprintf("handled: %d evtype: %d\n", handled, ev->evtype);
 			if (!handled)
 			{
-		   	if (ev->evtype == FBVNC_EVENT_NULL)
-		    	{
-    				if (iev.code == KEY_VOLUMEUP || iev.code == KEY_VOLUMEDOWN )
+		   		if (ev->evtype == FBVNC_EVENT_NULL)
+		    		{
+    					if (iev.code == KEY_VOLUMEUP || iev.code == KEY_VOLUMEDOWN )
 					{
+						// LIRC is automatically used, when current audio-stream 
+						// is in AC3! should not make any problems for those 
+						// without an AC3-Decoder connected
+
 						if (iev.value != 0)
 						{
 							char volume = g_Controld->getVolume(CControld::TYPE_AVS);
 							if (iev.code == KEY_VOLUMEUP)
 							{
 								volume = volume > 95 ? 100 : volume + 5;
-								if (use_lirc)
+								if (use_lirc || g_iIsAC3)
 									g_Controld->setVolume(60, CControld::TYPE_LIRC);
 							}
 							else 
 							{
 								volume = volume < 5 ? 0 : volume - 5;
-								if (use_lirc)
+								if (use_lirc || g_iIsAC3)
 									g_Controld->setVolume(40, CControld::TYPE_LIRC);
 							}
 							
-							if (!use_lirc)
+							if (!use_lirc && !g_iIsAC3)
 								g_Controld->setVolume(volume, CControld::TYPE_AVS);
 						}
 						
@@ -2472,7 +2530,7 @@ dprintf("reading ms_fd\n");
 						if (iev.value == 1)
 						{
 							bool mute = g_Controld->getMute(CControld::TYPE_AVS);
-							if (use_lirc)
+							if (use_lirc || g_iIsAC3)
 								g_Controld->setMute(!mute, CControld::TYPE_LIRC);
 							else
 								g_Controld->setMute(!mute, CControld::TYPE_AVS);
@@ -3290,6 +3348,7 @@ extern "C" {
 		char szMouse[20];
 		char szAutAspRatio[20];
 		char szUseLirc[20];
+		
 #ifdef HAVE_DREAMBOX_HARDWARE
 		unsigned short dummy;
 		while (read(rc_fd, &dummy, 2) > 0);
@@ -3317,8 +3376,10 @@ extern "C" {
 		sprintf(szTSPort      ,"streamingport%s",szServerNr);
 		sprintf(szCControlPort ,"clientcontrolport%s",szServerNr);
 		sprintf(szLCDPort     ,"lcdport%s",szServerNr);
-		sprintf(szAutAspRatio ,"autoaspectratio%s",szServerNr);
-		sprintf(szUseLirc     ,"lirc%s",szServerNr);
+
+		// from neutrino.conf		
+		sprintf(szAutAspRatio ,"video_Format%s",szServerNr);
+		sprintf(szUseLirc     ,"audio_avs_Control%s",szServerNr);
 		
 #ifdef HAVE_DREAMBOX_HARDWARE
 
@@ -3374,16 +3435,26 @@ extern "C" {
 		ts_port=config.getInt32(szTSPort,20002);
 		lcd_port=config.getInt32(szLCDPort,20003);
 		ccontrol_port=config.getInt32(szCControlPort,20005);
-		use_lirc=config.getInt32(szUseLirc,0);
+		//use_lirc=config.getInt32(szUseLirc,0);
 		gScale=config.getInt32(szScale,1);
-		auto_aspratio=config.getInt32(szAutAspRatio,0);
+		
 		serverScaleFactor = config.getInt32(szServerScale,1);
 		rcCycleDuration = config.getInt32("rc_cycle_duration",225)*1000;
 		rcTest = config.getInt32("rc_test",0);
 		strcpy(passwdString,config.getString(szPasswd,"").substr(0,8).c_str());
 		debug = config.getInt32("debug",1);
-		//debug = 1;
 		g_iScreenMode = config.getInt32("screenmode",0);
+		config.clear();
+		
+		// Read Neutrino Settings
+		CConfigFile neutrino_conf('\t');
+		neutrino_conf.loadConfig(CONFIGDIR "/neutrino.conf");
+		use_lirc=neutrino_conf.getInt32(szUseLirc,0) == 2;		
+		auto_aspratio=neutrino_conf.getInt32(szAutAspRatio,0) == 0;
+		neutrino_conf.clear();
+		
+		dprintf("Use LIRC : %d - 16:9 : %d\n", use_lirc, auto_aspratio);
+	
 #endif
 
 		dprintf("Server %s, Server-MAC %s, osdport: %d, tsport: %d, lcdport: %d, controlport %d\n", hostname, servermacadress, vnc_port, ts_port, lcd_port, ccontrol_port);
